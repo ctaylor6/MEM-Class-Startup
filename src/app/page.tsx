@@ -1,22 +1,43 @@
 "use client"
 
-import React, { useMemo, useState } from "react"
+import React, { useMemo, useRef, useState } from "react"
 import { runs } from "@/lib/fakeData"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts"
 
 type Run = (typeof runs)[number]
 type Status = "Pass" | "Watch" | "Fail"
 
-function statusVariant(s: string) {
+function clamp01(x: number) {
+  return Math.max(0, Math.min(1, x))
+}
+
+function riskToStatus(riskScore0to100: number): Status {
+  if (riskScore0to100 >= 70) return "Fail"
+  if (riskScore0to100 >= 40) return "Watch"
+  return "Pass"
+}
+
+function statusVariant(s: Status) {
   if (s === "Pass") return "secondary"
   if (s === "Watch") return "default"
   return "destructive"
 }
 
-function clamp01(x: number) {
-  return Math.max(0, Math.min(1, x))
+function asPct01(x01: number) {
+  return `${Math.round(clamp01(x01) * 100)}%`
 }
 
 function hashStr(s: string) {
@@ -29,7 +50,6 @@ function hashStr(s: string) {
 }
 
 function prng(seed: number) {
-  // deterministic [0,1)
   let x = seed || 123456789
   return () => {
     x ^= x << 13
@@ -39,880 +59,795 @@ function prng(seed: number) {
   }
 }
 
-function asPct(x: number) {
-  return `${Math.round(x * 100)}%`
+/**
+ * Synthetic plate assignment and placement.
+ * If your data already has buildplateId + x/y, swap this out.
+ */
+function assignBuildplateId(r: any) {
+  const id = String(r?.id ?? "")
+  const seed = hashStr(String(r?.program ?? "") + "|" + String(r?.material ?? "") + "|" + id)
+  const plate = (seed % 3) + 1
+  return `BP-${plate}`
 }
 
-function fmtDateLike(d: string) {
-  return d
-}
-
-function riskToStatus(risk: number): Status {
-  if (risk >= 70) return "Fail"
-  if (risk >= 40) return "Watch"
-  return "Pass"
-}
-
-function makeSpark(id: string, riskScore: number, n = 28) {
-  const seed = hashStr(id)
+function fakePartPlacement(r: any, plateSize = 300) {
+  const id = String(r?.id ?? "")
+  const seed = hashStr("pos|" + id)
   const rnd = prng(seed)
-  const base = clamp01((Number(riskScore) || 0) / 100)
-
-  const pts: number[] = []
-  let v = base
-  for (let i = 0; i < n; i++) {
-    const drift = (rnd() - 0.5) * (0.10 + 0.18 * (1 - base))
-    const pull = (base - v) * (0.06 + 0.08 * rnd())
-    v = clamp01(v + drift + pull)
-    pts.push(v)
-  }
-  return pts
+  const margin = 22
+  const x = margin + rnd() * (plateSize - 2 * margin)
+  const y = margin + rnd() * (plateSize - 2 * margin)
+  return { x, y }
 }
 
-function pathFromSeries(series: number[], w: number, h: number, pad: number) {
-  const xs = series.map((_, i) => pad + (i * (w - pad * 2)) / (series.length - 1))
-  const ys = series.map(v => pad + (1 - v) * (h - pad * 2))
-  return xs
-    .map((x, i) => `${i === 0 ? "M" : "L"} ${x.toFixed(2)} ${ys[i].toFixed(2)}`)
-    .join(" ")
-}
-
-function Sparkline({
-  id,
-  riskScore,
-  label,
-}: {
-  id: string
-  riskScore: number
-  label?: string
-}) {
-  const data = useMemo(() => makeSpark(id, riskScore), [id, riskScore])
-  const w = 150
-  const h = 38
-  const pad = 4
-  const d = pathFromSeries(data, w, h, pad)
-
-  return (
-    <div className="flex items-center gap-3">
-      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="text-zinc-900">
-        <path d={d} fill="none" stroke="currentColor" strokeWidth="2" />
-      </svg>
-      {label ? <div className="text-xs text-zinc-500">{label}</div> : null}
-    </div>
-  )
-}
-
-function BarMini({
-  value01,
-  label,
-}: {
-  value01: number
-  label: string
-}) {
-  const v = clamp01(value01)
-  return (
-    <div>
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-zinc-600">{label}</span>
-        <span className="tabular-nums text-zinc-800">{asPct(v)}</span>
-      </div>
-      <div className="mt-1 h-2 w-full rounded-full bg-zinc-100">
-        <div
-          className="h-2 rounded-full bg-zinc-900"
-          style={{ width: `${Math.round(v * 100)}%` }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function Histogram({
-  values,
-  bins = 12,
-}: {
-  values: number[]
-  bins?: number
-}) {
-  const counts = useMemo(() => {
-    const c = new Array(bins).fill(0)
-    for (const v0 of values) {
-      const v = clamp01(v0 / 100)
-      const i = Math.min(bins - 1, Math.max(0, Math.floor(v * bins)))
-      c[i]++
-    }
-    return c
-  }, [values, bins])
-
-  const max = Math.max(1, ...counts)
-  const w = 360
-  const h = 72
-  const pad = 6
-  const bw = (w - pad * 2) / bins
-
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="text-zinc-900">
-      {counts.map((c, i) => {
-        const bh = ((h - pad * 2) * c) / max
-        const x = pad + i * bw
-        const y = h - pad - bh
-        return (
-          <rect
-            key={i}
-            x={x + 1}
-            y={y}
-            width={Math.max(1, bw - 2)}
-            height={bh}
-            rx={3}
-            fill="currentColor"
-            opacity={0.14}
-          />
-        )
-      })}
-      <rect x={pad} y={h - pad - 1} width={w - pad * 2} height={1} fill="currentColor" opacity={0.25} />
-    </svg>
-  )
-}
-
-function Pill({
-  active,
-  children,
-  onClick,
-}: {
-  active: boolean
-  children: React.ReactNode
-  onClick: () => void
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={[
-        "rounded-full border px-3 py-1 text-sm transition",
-        active
-          ? "border-zinc-900 bg-zinc-900 text-white"
-          : "border-zinc-200 bg-white text-zinc-800 hover:border-zinc-300 hover:bg-zinc-50",
-      ].join(" ")}
-      type="button"
-    >
-      {children}
-    </button>
-  )
-}
-
-function Modal({
-  open,
-  title,
-  subtitle,
-  children,
-  onClose,
-}: {
-  open: boolean
-  title: string
-  subtitle?: string
-  children: React.ReactNode
-  onClose: () => void
-}) {
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/35" onClick={onClose} aria-hidden="true" />
-      <div className="absolute left-1/2 top-1/2 w-[min(880px,92vw)] -translate-x-1/2 -translate-y-1/2">
-        <div className="rounded-2xl border border-zinc-200 bg-white shadow-xl">
-          <div className="flex items-start justify-between gap-4 border-b border-zinc-100 px-5 py-4">
-            <div className="min-w-0">
-              <div className="text-base font-semibold">{title}</div>
-              {subtitle ? <div className="mt-1 text-sm text-zinc-600">{subtitle}</div> : null}
-            </div>
-            <button
-              onClick={onClose}
-              className="rounded-lg px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-50"
-              type="button"
-            >
-              Close
-            </button>
-          </div>
-          <div className="px-5 py-5">{children}</div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function scoreTag(score01: number) {
-  const s = clamp01(score01)
-  if (s >= 0.75) return "High"
-  if (s >= 0.45) return "Medium"
-  return "Low"
-}
-
+/**
+ * Signals + condition drivers with explicit quality effect.
+ * These are synthetic, but structured so your real model outputs can drop in.
+ */
 function fakeSignalsForRun(r: any) {
-  const id = String(r.id ?? "")
-  const seed = hashStr(id + "|" + String(r.program ?? "") + "|" + String(r.part ?? ""))
+  const id = String(r?.id ?? "")
+  const seed = hashStr("sig|" + id + "|" + String(r?.program ?? "") + "|" + String(r?.part ?? ""))
   const rnd = prng(seed)
 
-  const risk = clamp01(Number(r.riskScore ?? 0) / 100)
+  const risk01 = clamp01(Number(r?.riskScore ?? 0) / 100)
 
-  // "technical" metrics, intentionally plausible but synthetic
-  const spatter = clamp01(0.18 + 0.75 * risk + (rnd() - 0.5) * 0.12)
-  const meltPool = clamp01(0.20 + 0.65 * risk + (rnd() - 0.5) * 0.14)
-  const recoater = clamp01(0.10 + 0.55 * risk + (rnd() - 0.5) * 0.20)
-  const plume = clamp01(0.12 + 0.60 * risk + (rnd() - 0.5) * 0.16)
-  const gasFlow = clamp01(0.80 - 0.55 * risk + (rnd() - 0.5) * 0.18)
+  // conditions, tuned to correlate with risk
+  const spatter01 = clamp01(0.18 + 0.75 * risk01 + (rnd() - 0.5) * 0.12)
+  const meltPoolInstab01 = clamp01(0.20 + 0.65 * risk01 + (rnd() - 0.5) * 0.14)
+  const recoaterInteract01 = clamp01(0.10 + 0.55 * risk01 + (rnd() - 0.5) * 0.20)
+  const plumeOpacity01 = clamp01(0.12 + 0.60 * risk01 + (rnd() - 0.5) * 0.16)
+  const gasFlowDeficit01 = clamp01(0.20 + 0.60 * risk01 + (rnd() - 0.5) * 0.14) // higher is worse
 
-  const seriesA = makeSpark(id + "A", Number(r.riskScore ?? 0) + 6, 34) // spatter-like
-  const seriesB = makeSpark(id + "B", Number(r.riskScore ?? 0) - 8, 34) // melt pool
-  const seriesC = makeSpark(id + "C", Number(r.riskScore ?? 0) + 2, 34) // plume
-
-  const anomalies = Math.max(0, Math.round((risk * 6 + rnd() * 2.2) - 0.6))
-
-  const topDrivers = [
-    { name: "Spatter intensity", score: spatter, note: "Elevated ejecta correlates with surface roughness and lack-of-fusion risk." },
-    { name: "Melt pool stability", score: meltPool, note: "Instability increases microstructure variability and mechanical scatter." },
-    { name: "Recoater interaction", score: recoater, note: "Intermittent contact signatures correlate with streaking and layer defects." },
-    { name: "Plume opacity", score: plume, note: "Higher plume opacity correlates with energy coupling drift and porosity proxies." },
-    { name: "Gas flow margin", score: 1 - gasFlow, note: "Reduced flow margin correlates with soot accumulation and spatter recirculation." },
-  ]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
-
-  const predictedCTPorosity = Math.max(0, Math.round(2 + 38 * risk + rnd() * 6))
-  const tensileMargin = clamp01(0.92 - 0.42 * risk + (rnd() - 0.5) * 0.08) // higher is better
-  const fatigueRisk = clamp01(0.10 + 0.78 * risk + (rnd() - 0.5) * 0.12)
+  // predicted outcomes
+  const predictedCTPorosity = Math.max(0, Math.round(2 + 40 * risk01 + rnd() * 7))
+  const tensileMargin01 = clamp01(0.92 - 0.42 * risk01 + (rnd() - 0.5) * 0.08) // higher better
+  const fatigueRisk01 = clamp01(0.10 + 0.78 * risk01 + (rnd() - 0.5) * 0.12)
 
   const disposition =
-    risk >= 0.72
-      ? { label: "Hold for targeted NDT", detail: "Automatic hold triggered due to consistent high-risk signatures." }
-      : risk >= 0.42
-      ? { label: "Proceed with enhanced inspection", detail: "Proceed, but increase sampling intensity and review anomaly windows." }
+    risk01 >= 0.72
+      ? { label: "Hold for targeted NDT", detail: "Consistent high-risk signatures. Prevent quality escape." }
+      : risk01 >= 0.42
+      ? { label: "Proceed with enhanced inspection", detail: "Proceed, but increase sampling and review anomaly windows." }
       : { label: "Proceed", detail: "Within expected process envelope for this program and material." }
 
+  const conditions = [
+    {
+      key: "Spatter",
+      value01: spatter01,
+      qualityEffect:
+        "Higher spatter increases surface roughness, elevates lack-of-fusion probability, and can seed near-surface defects.",
+    },
+    {
+      key: "Melt pool instability",
+      value01: meltPoolInstab01,
+      qualityEffect:
+        "Instability increases porosity risk and microstructure variability, raising mechanical property scatter.",
+    },
+    {
+      key: "Recoater interaction",
+      value01: recoaterInteract01,
+      qualityEffect:
+        "Recoater contact or streaking can cause layer defects, geometric deviation, and downstream fusion issues.",
+    },
+    {
+      key: "Plume opacity",
+      value01: plumeOpacity01,
+      qualityEffect:
+        "Opacity drift indicates coupling changes that can shift energy density and drive porosity signatures.",
+    },
+    {
+      key: "Gas flow deficit",
+      value01: gasFlowDeficit01,
+      qualityEffect:
+        "Poor flow can recirculate spatter and soot, contaminating the melt pool and elevating defect probability.",
+    },
+  ].sort((a, b) => b.value01 - a.value01)
+
   return {
-    risk,
-    spatter,
-    meltPool,
-    recoater,
-    plume,
-    gasFlow,
-    anomalies,
-    seriesA,
-    seriesB,
-    seriesC,
-    topDrivers,
+    risk01,
+    conditions,
     predictedCTPorosity,
-    tensileMargin,
-    fatigueRisk,
+    tensileMargin01,
+    fatigueRisk01,
     disposition,
   }
 }
 
-export default function Page() {
-  const [query, setQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<Set<Status>>(
-    () => new Set<Status>(["Fail", "Watch", "Pass"])
-  )
-  const [program, setProgram] = useState<string>("All")
-  const [facility, setFacility] = useState<string>("Aerospace Production Facility — North Line")
-  const [sort, setSort] = useState<"risk_desc" | "risk_asc" | "date_desc" | "id">("risk_desc")
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [modalRun, setModalRun] = useState<Run | null>(null)
+function riskColorClass(risk01: number) {
+  // Loud palette
+  if (risk01 >= 0.7) return "bg-red-600"
+  if (risk01 >= 0.4) return "bg-amber-500"
+  return "bg-emerald-500"
+}
 
-  const programs = useMemo(() => {
-    const s = new Set<string>()
-    for (const r of runs) s.add(String((r as any).program ?? ""))
-    return ["All", ...Array.from(s).filter(Boolean).sort()]
+function riskText(risk01: number) {
+  return Math.round(clamp01(risk01) * 100)
+}
+
+function summarizePlate(plateRuns: Run[]) {
+  const total = plateRuns.length
+  const risks = plateRuns.map(r => Number((r as any)?.riskScore ?? 0))
+  const avg = total ? risks.reduce((a, b) => a + b, 0) / total : 0
+  const max = total ? Math.max(...risks) : 0
+  const fail = plateRuns.filter(r => riskToStatus(Number((r as any)?.riskScore ?? 0)) === "Fail").length
+  const watch = plateRuns.filter(r => riskToStatus(Number((r as any)?.riskScore ?? 0)) === "Watch").length
+  const pass = plateRuns.filter(r => riskToStatus(Number((r as any)?.riskScore ?? 0)) === "Pass").length
+  return { total, avg: Math.round(avg), max: Math.round(max), fail, watch, pass }
+}
+
+type ChatMsg = { role: "user" | "assistant"; content: string }
+
+function normalize(s: string) {
+  return s.trim().toLowerCase()
+}
+
+function formatRunLine(r: any) {
+  const id = String(r?.id ?? "")
+  const program = String(r?.program ?? "")
+  const part = String(r?.part ?? "")
+  const material = String(r?.material ?? "")
+  const risk = Number(r?.riskScore ?? 0)
+  const st = riskToStatus(risk)
+  return `${id} (${st}, risk ${risk}): ${program} • ${part} • ${material}`
+}
+
+export default function Page() {
+  // buildplates
+  const buildplates = useMemo(() => {
+    const ids = new Set<string>()
+    for (const r of runs as any[]) ids.add(assignBuildplateId(r))
+    return Array.from(ids).sort()
   }, [])
 
-  const facilities = useMemo(
-    () => [
-      "Aerospace Production Facility — North Line",
-      "Aerospace Production Facility — South Line",
-      "Aerospace Production Facility — Prototype Cell",
-    ],
-    []
-  )
+  const [plateId, setPlateId] = useState<string>(buildplates[0] ?? "BP-1")
+  const [query, setQuery] = useState("")
+  const [sort, setSort] = useState<"risk_desc" | "risk_asc" | "id">("risk_desc")
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
+  // chat
+  const [chatOpen, setChatOpen] = useState(true)
+  const [chat, setChat] = useState<ChatMsg[]>([
+    {
+      role: "assistant",
+      content:
+        "Ask about this buildplate. Examples: “highest risk part”, “why is BP risky”, “list fails”, “summary”.",
+    },
+  ])
+  const [chatInput, setChatInput] = useState("")
+  const chatEndRef = useRef<HTMLDivElement | null>(null)
 
-    const base = runs.filter(r => {
-      const risk = Number((r as any).riskScore ?? 0)
-      const st = riskToStatus(risk)
-      if (!statusFilter.has(st)) return false
+  const plateRunsAll = useMemo(() => {
+    return (runs as any[]).filter(r => assignBuildplateId(r) === plateId) as Run[]
+  }, [plateId])
 
-      const pr = String((r as any).program ?? "")
-      if (program !== "All" && pr !== program) return false
-
+  const plateRuns = useMemo(() => {
+    const q = normalize(query)
+    const base = plateRunsAll.filter(r => {
       if (!q) return true
-
       const hay = [
-        (r as any).id,
-        (r as any).program,
-        (r as any).part,
-        (r as any).material,
-        (r as any).date,
-        st,
+        (r as any)?.id,
+        (r as any)?.program,
+        (r as any)?.part,
+        (r as any)?.material,
+        (r as any)?.date,
       ]
         .map(x => String(x ?? ""))
-        .join(" • ")
+        .join(" ")
         .toLowerCase()
-
       return hay.includes(q)
     })
 
     const sorted = [...base].sort((a, b) => {
-      const ra = Number((a as any).riskScore ?? 0)
-      const rb = Number((b as any).riskScore ?? 0)
+      const ra = Number((a as any)?.riskScore ?? 0)
+      const rb = Number((b as any)?.riskScore ?? 0)
       if (sort === "risk_desc") return rb - ra
       if (sort === "risk_asc") return ra - rb
-      if (sort === "date_desc") {
-        const da = String((a as any).date ?? "")
-        const db = String((b as any).date ?? "")
-        return db.localeCompare(da)
-      }
-      const ia = String((a as any).id ?? "")
-      const ib = String((b as any).id ?? "")
+      const ia = String((a as any)?.id ?? "")
+      const ib = String((b as any)?.id ?? "")
       return ia.localeCompare(ib)
     })
 
     return sorted
-  }, [query, statusFilter, program, sort])
+  }, [plateRunsAll, query, sort])
 
-  const kpis = useMemo(() => {
-    const total = filtered.length
-    const risks = filtered.map(r => Number((r as any).riskScore ?? 0))
-    const pass = filtered.filter(r => riskToStatus(Number((r as any).riskScore ?? 0)) === "Pass").length
-    const watch = filtered.filter(r => riskToStatus(Number((r as any).riskScore ?? 0)) === "Watch").length
-    const fail = filtered.filter(r => riskToStatus(Number((r as any).riskScore ?? 0)) === "Fail").length
-    const avg = total === 0 ? 0 : risks.reduce((a, b) => a + b, 0) / total
-    const p90 =
-      total === 0
-        ? 0
-        : [...risks].sort((a, b) => a - b)[Math.min(total - 1, Math.floor(0.9 * (total - 1)))]
+  const plateSummary = useMemo(() => summarizePlate(plateRunsAll), [plateRunsAll])
 
-    return {
-      total,
-      pass,
-      watch,
-      fail,
-      avg: Math.round(avg),
-      p90: Math.round(p90),
-      risks,
-    }
-  }, [filtered])
+  const selectedRun = useMemo(() => {
+    if (!selectedRunId) return null
+    return plateRunsAll.find(r => String((r as any)?.id ?? "") === selectedRunId) ?? null
+  }, [plateRunsAll, selectedRunId])
 
-  const toggleStatus = (s: Status) => {
-    setStatusFilter(prev => {
-      const next = new Set(prev)
-      if (next.has(s)) next.delete(s)
-      else next.add(s)
-      if (next.size === 0) return prev
-      return next
+  const selectedSig = useMemo(() => {
+    if (!selectedRun) return null
+    return fakeSignalsForRun(selectedRun as any)
+  }, [selectedRun])
+
+  // heatmap grid
+  const PLATE_MM = 300
+  const TILE_MM = 30
+  const GRID = Math.round(PLATE_MM / TILE_MM) // 10 x 10
+  const tiles = useMemo(() => {
+    // start with a base field and then “inject” risk around each part
+    const base: number[] = new Array(GRID * GRID).fill(0).map((_, i) => {
+      const seed = hashStr(plateId + "|tile|" + i)
+      const rnd = prng(seed)
+      return clamp01(0.12 + rnd() * 0.18)
     })
+
+    const addInfluence = (cx: number, cy: number, amp01: number) => {
+      for (let gy = 0; gy < GRID; gy++) {
+        for (let gx = 0; gx < GRID; gx++) {
+          const x = (gx + 0.5) * TILE_MM
+          const y = (gy + 0.5) * TILE_MM
+          const dx = x - cx
+          const dy = y - cy
+          const d2 = dx * dx + dy * dy
+          const sigma2 = (42 * 42) // influence radius
+          const bump = amp01 * Math.exp(-d2 / (2 * sigma2))
+          base[gy * GRID + gx] = clamp01(base[gy * GRID + gx] + bump)
+        }
+      }
+    }
+
+    for (const r of plateRunsAll as any[]) {
+      const pos = fakePartPlacement(r, PLATE_MM)
+      const risk01 = clamp01(Number(r?.riskScore ?? 0) / 100)
+      addInfluence(pos.x, pos.y, 0.55 * risk01)
+    }
+
+    return base
+  }, [plateId, plateRunsAll])
+
+  const chartStatus = useMemo(() => {
+    return [
+      { name: "Fail", value: plateSummary.fail },
+      { name: "Watch", value: plateSummary.watch },
+      { name: "Pass", value: plateSummary.pass },
+    ]
+  }, [plateSummary])
+
+  const chartTopRisks = useMemo(() => {
+    const top = [...plateRunsAll]
+      .sort((a, b) => Number((b as any)?.riskScore ?? 0) - Number((a as any)?.riskScore ?? 0))
+      .slice(0, 6)
+      .map(r => ({
+        id: String((r as any)?.id ?? ""),
+        risk: Number((r as any)?.riskScore ?? 0),
+      }))
+      .reverse()
+    return top
+  }, [plateRunsAll])
+
+  const selectedRunConditionsBar = useMemo(() => {
+    if (!selectedSig) return []
+    return selectedSig.conditions
+      .slice(0, 5)
+      .map(c => ({ name: c.key, value: Math.round(c.value01 * 100) }))
+      .reverse()
+  }, [selectedSig])
+
+  function scrollChatToEnd() {
+    requestAnimationFrame(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }))
   }
 
-  const clearFilters = () => {
-    setQuery("")
-    setProgram("All")
-    setStatusFilter(new Set<Status>(["Fail", "Watch", "Pass"]))
-    setSort("risk_desc")
-    setExpandedId(null)
+  function answerChat(prompt: string) {
+    const p = normalize(prompt)
+    if (!plateRunsAll.length) return "No runs on this buildplate."
+
+    const sorted = [...plateRunsAll].sort(
+      (a, b) => Number((b as any)?.riskScore ?? 0) - Number((a as any)?.riskScore ?? 0)
+    )
+    const fails = plateRunsAll.filter(r => riskToStatus(Number((r as any)?.riskScore ?? 0)) === "Fail")
+
+    if (p.includes("summary") || p === "help") {
+      return `Plate ${plateId}: ${plateSummary.total} runs, avg risk ${plateSummary.avg}, max risk ${plateSummary.max}. Pass ${plateSummary.pass}, Watch ${plateSummary.watch}, Fail ${plateSummary.fail}.`
+    }
+
+    if (p.includes("highest") || p.includes("top risk") || p.includes("worst")) {
+      const r = sorted[0] as any
+      const sig = fakeSignalsForRun(r)
+      const drivers = sig.conditions.slice(0, 2).map(d => d.key).join(", ")
+      return `Highest risk: ${formatRunLine(r)}. Top drivers: ${drivers}. Recommended: ${sig.disposition.label}.`
+    }
+
+    if (p.includes("list") && (p.includes("fail") || p.includes("fails"))) {
+      if (!fails.length) return "No Fail runs on this buildplate."
+      return fails.slice(0, 10).map(r => `- ${formatRunLine(r as any)}`).join("\n")
+    }
+
+    if (p.includes("why") && (p.includes("risky") || p.includes("risk"))) {
+      const top = sorted.slice(0, Math.min(4, sorted.length)).map(r => fakeSignalsForRun(r as any))
+      // average top condition strengths across top risky runs
+      const acc: Record<string, { sum: number; n: number }> = {}
+      for (const s of top) {
+        for (const c of s.conditions) {
+          acc[c.key] = acc[c.key] ?? { sum: 0, n: 0 }
+          acc[c.key].sum += c.value01
+          acc[c.key].n += 1
+        }
+      }
+      const ranked = Object.entries(acc)
+        .map(([k, v]) => ({ k, avg: v.sum / Math.max(1, v.n) }))
+        .sort((a, b) => b.avg - a.avg)
+        .slice(0, 3)
+
+      const line = ranked.map(x => `${x.k} (${asPct01(x.avg)})`).join(", ")
+      return `This plate trends risky due to elevated conditions in the highest-risk runs: ${line}.`
+    }
+
+    // If they mention an ID, try to respond about that run
+    const maybeId = plateRunsAll.find(r => normalize(String((r as any)?.id ?? "")) === p)
+    if (maybeId) {
+      const r = maybeId as any
+      const sig = fakeSignalsForRun(r)
+      const top = sig.conditions[0]
+      return `${formatRunLine(r)}. Primary driver: ${top.key} (${asPct01(top.value01)}). Effect: ${top.qualityEffect}`
+    }
+
+    return `Try: “summary”, “highest risk part”, “list fails”, “why is BP risky”, or paste a run ID exactly.`
+  }
+
+  function onSendChat() {
+    const text = chatInput.trim()
+    if (!text) return
+    setChat(prev => [...prev, { role: "user", content: text }])
+    const reply = answerChat(text)
+    setChat(prev => [...prev, { role: "user", content: text }, { role: "assistant", content: reply }])
+    setChatInput("")
+    scrollChatToEnd()
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50">
+    <div className="min-h-screen bg-zinc-950 text-zinc-50">
       <div className="mx-auto max-w-6xl px-6 py-10">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-3xl font-semibold tracking-tight">Qualification Risk Dashboard</h1>
-            <p className="mt-2 text-zinc-600">
-              Live operations view for the {facility}. All signals and outcomes shown here are synthetic.
+            <h1 className="text-3xl font-semibold tracking-tight">
+              Qualification Risk Dashboard <span className="text-red-500">LIVE</span>
+            </h1>
+            <p className="mt-2 text-sm text-zinc-300">
+              Simplified view: buildplate, parts, conditions, and quality impact. Signals are synthetic.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-2 sm:justify-end">
             <select
-              value={facility}
-              onChange={e => setFacility(e.target.value)}
-              className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm outline-none transition focus:border-zinc-400"
+              value={plateId}
+              onChange={e => {
+                setPlateId(e.target.value)
+                setSelectedRunId(null)
+              }}
+              className="h-10 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-sm outline-none transition focus:border-zinc-500"
             >
-              {facilities.map(f => (
-                <option key={f} value={f}>
-                  {f}
+              {buildplates.map(p => (
+                <option key={p} value={p}>
+                  {p}
                 </option>
               ))}
             </select>
-            <Button variant="secondary" onClick={clearFilters}>
+
+            <select
+              value={sort}
+              onChange={e => setSort(e.target.value as any)}
+              className="h-10 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-sm outline-none transition focus:border-zinc-500"
+            >
+              <option value="risk_desc">Risk high</option>
+              <option value="risk_asc">Risk low</option>
+              <option value="id">Run ID</option>
+            </select>
+
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setQuery("")
+                setSelectedRunId(null)
+              }}
+            >
               Reset
             </Button>
             <Button onClick={() => alert("Export queued (demo).")}>Export</Button>
           </div>
         </div>
 
-        {/* KPI row */}
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-5">
-          <Card>
+        {/* KPI row (loud) */}
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-6">
+          <Card className="border-zinc-800 bg-zinc-900">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Runs</CardTitle>
+              <CardTitle className="text-sm text-zinc-300">Runs on plate</CardTitle>
             </CardHeader>
-            <CardContent className="text-2xl font-semibold">{kpis.total}</CardContent>
+            <CardContent className="text-3xl font-semibold">{plateSummary.total}</CardContent>
           </Card>
-
-          <Card>
+          <Card className="border-zinc-800 bg-zinc-900">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Pass</CardTitle>
+              <CardTitle className="text-sm text-zinc-300">Avg risk</CardTitle>
             </CardHeader>
-            <CardContent className="text-2xl font-semibold">{kpis.pass}</CardContent>
+            <CardContent className="text-3xl font-semibold text-amber-400">{plateSummary.avg}</CardContent>
           </Card>
-
-          <Card>
+          <Card className="border-zinc-800 bg-zinc-900">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Watch</CardTitle>
+              <CardTitle className="text-sm text-zinc-300">Max risk</CardTitle>
             </CardHeader>
-            <CardContent className="text-2xl font-semibold">{kpis.watch}</CardContent>
+            <CardContent className="text-3xl font-semibold text-red-500">{plateSummary.max}</CardContent>
           </Card>
-
-          <Card>
+          <Card className="border-zinc-800 bg-zinc-900">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Avg risk</CardTitle>
+              <CardTitle className="text-sm text-zinc-300">Fail</CardTitle>
             </CardHeader>
-            <CardContent className="text-2xl font-semibold">{kpis.avg}</CardContent>
+            <CardContent className="text-3xl font-semibold text-red-500">{plateSummary.fail}</CardContent>
           </Card>
-
-          <Card>
+          <Card className="border-zinc-800 bg-zinc-900">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">P90 risk</CardTitle>
+              <CardTitle className="text-sm text-zinc-300">Watch</CardTitle>
             </CardHeader>
-            <CardContent className="text-2xl font-semibold">{kpis.p90}</CardContent>
+            <CardContent className="text-3xl font-semibold text-amber-400">{plateSummary.watch}</CardContent>
+          </Card>
+          <Card className="border-zinc-800 bg-zinc-900">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm text-zinc-300">Pass</CardTitle>
+            </CardHeader>
+            <CardContent className="text-3xl font-semibold text-emerald-400">{plateSummary.pass}</CardContent>
           </Card>
         </div>
 
-        {/* Distribution panel */}
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-12">
-          <Card className="sm:col-span-7">
+        {/* Main: plate heatmap + charts + chat */}
+        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-12">
+          {/* Buildplate heatmap */}
+          <Card className="border-zinc-800 bg-zinc-900 lg:col-span-7">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Risk distribution</CardTitle>
-            </CardHeader>
-            <CardContent className="flex items-center justify-between gap-4">
-              <Histogram values={kpis.risks} />
-              <div className="min-w-[170px] space-y-3">
-                <div>
-                  <div className="text-xs font-medium text-zinc-600">Operational note</div>
-                  <div className="mt-1 text-sm text-zinc-700">
-                    Shift manager view prioritizes high-risk builds and clusters by program and material.
-                  </div>
-                </div>
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                  <div className="text-xs font-medium text-zinc-600">Auto-routing</div>
-                  <div className="mt-1 text-sm text-zinc-800">
-                    Fail → hold & NDT<br />
-                    Watch → enhanced inspection<br />
-                    Pass → proceed
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="sm:col-span-5">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-600">Controls</CardTitle>
+              <CardTitle className="text-sm text-zinc-200">Buildplate heatmap (quality risk)</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-zinc-600">Search</label>
-                <input
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder="ID, program, part, material, date..."
-                  className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-zinc-400"
-                />
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-zinc-300">
+                  Tiles show inferred risk. Dots are parts (runs). Click a dot to inspect conditions.
+                </div>
+                <div className="flex items-center gap-2 text-xs text-zinc-300">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-3 w-3 rounded bg-emerald-500" /> Pass
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-3 w-3 rounded bg-amber-500" /> Watch
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-3 w-3 rounded bg-red-600" /> Fail
+                  </span>
+                </div>
               </div>
 
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                <div className="relative mx-auto w-[min(520px,100%)]">
+                  {/* grid */}
+                  <div
+                    className="grid"
+                    style={{
+                      gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`,
+                      gap: 3,
+                    }}
+                  >
+                    {tiles.map((t, i) => {
+                      const c = riskColorClass(t)
+                      return (
+                        <div
+                          key={i}
+                          className={[
+                            "aspect-square rounded",
+                            c,
+                            "opacity-90",
+                            "ring-1 ring-black/20",
+                          ].join(" ")}
+                          title={`tile risk ${riskText(t)}`}
+                        />
+                      )
+                    })}
+                  </div>
+
+                  {/* part markers */}
+                  <div className="pointer-events-none absolute inset-0">
+                    {(plateRunsAll as any[]).map(r => {
+                      const id = String(r?.id ?? "")
+                      const pos = fakePartPlacement(r, PLATE_MM)
+                      const risk01 = clamp01(Number(r?.riskScore ?? 0) / 100)
+                      const st = riskToStatus(Number(r?.riskScore ?? 0))
+                      const color =
+                        st === "Fail" ? "bg-red-500" : st === "Watch" ? "bg-amber-400" : "bg-emerald-400"
+
+                      // map mm -> % within the grid container
+                      const leftPct = (pos.x / PLATE_MM) * 100
+                      const topPct = (pos.y / PLATE_MM) * 100
+                      const isSel = selectedRunId === id
+
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          className={[
+                            "pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2",
+                            "h-4 w-4 rounded-full",
+                            color,
+                            "ring-2 ring-zinc-950",
+                            isSel ? "outline outline-2 outline-white" : "",
+                          ].join(" ")}
+                          style={{ left: `${leftPct}%`, top: `${topPct}%`, opacity: 0.9 }}
+                          title={`${id} risk ${Math.round(risk01 * 100)}`}
+                          onClick={() => setSelectedRunId(id)}
+                        />
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* parts on plate */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="text-xs font-medium text-zinc-600">Program</label>
-                  <select
-                    value={program}
-                    onChange={e => setProgram(e.target.value)}
-                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-zinc-400"
-                  >
-                    {programs.map(p => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="text-sm font-semibold text-zinc-100">Parts on this buildplate</div>
+                  <div className="mt-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
+                    <input
+                      value={query}
+                      onChange={e => setQuery(e.target.value)}
+                      placeholder="Filter parts by ID, program, material..."
+                      className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-zinc-500"
+                    />
+                    <div className="mt-3 max-h-[220px] overflow-auto space-y-2 pr-1">
+                      {plateRuns.map(r => {
+                        const id = String((r as any)?.id ?? "")
+                        const risk = Number((r as any)?.riskScore ?? 0)
+                        const st = riskToStatus(risk)
+                        const isSel = selectedRunId === id
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setSelectedRunId(id)}
+                            className={[
+                              "w-full rounded-xl border px-3 py-2 text-left text-sm transition",
+                              isSel
+                                ? "border-white bg-zinc-900"
+                                : "border-zinc-800 bg-zinc-950 hover:border-zinc-700",
+                            ].join(" ")}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0 truncate font-semibold">{id}</div>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={statusVariant(st) as any}>{st}</Badge>
+                                <span className="tabular-nums text-zinc-200">{risk}</span>
+                              </div>
+                            </div>
+                            <div className="mt-1 truncate text-xs text-zinc-400">
+                              {(r as any)?.program} • {(r as any)?.part} • {(r as any)?.material}
+                            </div>
+                          </button>
+                        )
+                      })}
+                      {plateRuns.length === 0 && (
+                        <div className="text-sm text-zinc-400">No matches.</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
+                {/* selected run conditions */}
                 <div>
-                  <label className="text-xs font-medium text-zinc-600">Sort</label>
-                  <select
-                    value={sort}
-                    onChange={e => setSort(e.target.value as any)}
-                    className="mt-1 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-zinc-400"
-                  >
-                    <option value="risk_desc">Risk high</option>
-                    <option value="risk_asc">Risk low</option>
-                    <option value="date_desc">Newest</option>
-                    <option value="id">Run ID</option>
-                  </select>
-                </div>
-              </div>
+                  <div className="text-sm font-semibold text-zinc-100">Selected part: conditions and quality impact</div>
+                  <div className="mt-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                    {!selectedRun || !selectedSig ? (
+                      <div className="text-sm text-zinc-400">Click a dot or pick a part from the list.</div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-base font-semibold">{String((selectedRun as any)?.id ?? "")}</div>
+                            <div className="mt-1 text-xs text-zinc-400">
+                              {(selectedRun as any)?.program} • {(selectedRun as any)?.part} • {(selectedRun as any)?.material} •{" "}
+                              {String((selectedRun as any)?.date ?? "")}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs text-zinc-400">Risk</div>
+                            <div className="text-3xl font-semibold text-red-500 tabular-nums">
+                              {Number((selectedRun as any)?.riskScore ?? 0)}
+                            </div>
+                          </div>
+                        </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="text-xs font-medium text-zinc-600">Status:</div>
-                <Pill active={statusFilter.has("Fail")} onClick={() => toggleStatus("Fail")}>
-                  Fail
-                </Pill>
-                <Pill active={statusFilter.has("Watch")} onClick={() => toggleStatus("Watch")}>
-                  Watch
-                </Pill>
-                <Pill active={statusFilter.has("Pass")} onClick={() => toggleStatus("Pass")}>
-                  Pass
-                </Pill>
+                        <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
+                          <div className="text-xs font-semibold text-zinc-200">Disposition</div>
+                          <div className="mt-1 text-sm font-semibold text-zinc-50">{selectedSig.disposition.label}</div>
+                          <div className="mt-1 text-sm text-zinc-300">{selectedSig.disposition.detail}</div>
+                        </div>
+
+                        {/* condition bar chart */}
+                        <div className="h-[160px] w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={selectedRunConditionsBar} layout="vertical" margin={{ left: 8, right: 10 }}>
+                              <XAxis type="number" domain={[0, 100]} tick={{ fill: "#d4d4d8", fontSize: 12 }} />
+                              <YAxis
+                                type="category"
+                                dataKey="name"
+                                width={120}
+                                tick={{ fill: "#d4d4d8", fontSize: 12 }}
+                              />
+                              <Tooltip />
+                              <Bar dataKey="value">
+                                {selectedRunConditionsBar.map((_, i) => (
+                                  <Cell
+                                    key={i}
+                                    fill={i % 3 === 0 ? "#ef4444" : i % 3 === 1 ? "#f59e0b" : "#22c55e"}
+                                  />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* explicit condition explanations */}
+                        <div className="space-y-2">
+                          {selectedSig.conditions.slice(0, 3).map(c => (
+                            <div key={c.key} className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-semibold text-zinc-50">{c.key}</div>
+                                <div className="text-sm font-semibold text-zinc-50 tabular-nums">
+                                  {asPct01(c.value01)}
+                                </div>
+                              </div>
+                              <div className="mt-1 text-sm text-zinc-300">{c.qualityEffect}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* predicted outcomes */}
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
+                            <div className="text-xs text-zinc-300">CT porosity (est.)</div>
+                            <div className="mt-1 text-xl font-semibold text-red-400 tabular-nums">
+                              {selectedSig.predictedCTPorosity}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
+                            <div className="text-xs text-zinc-300">Tensile margin (est.)</div>
+                            <div className="mt-1 text-xl font-semibold text-emerald-300 tabular-nums">
+                              {asPct01(selectedSig.tensileMargin01)}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
+                            <div className="text-xs text-zinc-300">Fatigue risk (est.)</div>
+                            <div className="mt-1 text-xl font-semibold text-amber-300 tabular-nums">
+                              {asPct01(selectedSig.fatigueRisk01)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
-        </div>
 
-        {/* List */}
-        <div className="mt-6 grid grid-cols-1 gap-4">
-          {filtered.map(r => {
-            const id = String((r as any).id)
-            const risk = Number((r as any).riskScore ?? 0)
-            const status = riskToStatus(risk)
-            const isOpen = expandedId === id
-            const sig = fakeSignalsForRun(r as any)
+          {/* Right column: charts + chat */}
+          <div className="space-y-4 lg:col-span-5">
+            <Card className="border-zinc-800 bg-zinc-900">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-zinc-200">Plate status mix (pie)</CardTitle>
+              </CardHeader>
+              <CardContent className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Tooltip />
+                    <Pie data={chartStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85}>
+                      <Cell fill="#ef4444" />
+                      <Cell fill="#f59e0b" />
+                      <Cell fill="#22c55e" />
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
 
-            return (
-              <Card
-                key={id}
-                className={[
-                  "transition-shadow",
-                  "hover:shadow-sm",
-                  isOpen ? "ring-1 ring-zinc-300" : "",
-                ].join(" ")}
-              >
-                <CardContent className="p-5">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <div className="text-sm font-semibold">{id}</div>
-                        <Badge variant={statusVariant(status) as any}>{status}</Badge>
+            <Card className="border-zinc-800 bg-zinc-900">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm text-zinc-200">Top risk parts (bar)</CardTitle>
+              </CardHeader>
+              <CardContent className="h-[220px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartTopRisks} margin={{ left: 8, right: 10 }}>
+                    <XAxis dataKey="id" tick={{ fill: "#d4d4d8", fontSize: 11 }} />
+                    <YAxis tick={{ fill: "#d4d4d8", fontSize: 12 }} domain={[0, 100]} />
+                    <Tooltip />
+                    <Bar dataKey="risk">
+                      {chartTopRisks.map((d, i) => (
+                        <Cell
+                          key={i}
+                          fill={d.risk >= 70 ? "#ef4444" : d.risk >= 40 ? "#f59e0b" : "#22c55e"}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
 
-                        <div className="hidden items-center gap-2 text-xs text-zinc-500 sm:flex">
-                          <span className="h-1 w-1 rounded-full bg-zinc-300" />
-                          <span>process signals</span>
-                        </div>
-
-                        <div className="hidden text-zinc-900 sm:block">
-                          <Sparkline id={id} riskScore={risk} label="overall" />
-                        </div>
-                      </div>
-
-                      <div className="mt-2 truncate text-sm text-zinc-600">
-                        {(r as any).program} • {(r as any).part} • {(r as any).material} •{" "}
-                        {fmtDateLike(String((r as any).date ?? ""))}
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="text-xs text-zinc-500">Spatter</div>
-                          <div className="mt-1 flex items-baseline justify-between">
-                            <div className="text-sm font-semibold text-zinc-900">{scoreTag(sig.spatter)}</div>
-                            <div className="text-xs text-zinc-500">{asPct(sig.spatter)}</div>
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="text-xs text-zinc-500">Melt pool</div>
-                          <div className="mt-1 flex items-baseline justify-between">
-                            <div className="text-sm font-semibold text-zinc-900">{scoreTag(sig.meltPool)}</div>
-                            <div className="text-xs text-zinc-500">{asPct(sig.meltPool)}</div>
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="text-xs text-zinc-500">Recoater</div>
-                          <div className="mt-1 flex items-baseline justify-between">
-                            <div className="text-sm font-semibold text-zinc-900">{scoreTag(sig.recoater)}</div>
-                            <div className="text-xs text-zinc-500">{asPct(sig.recoater)}</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3 sm:justify-end">
-                      <div className="text-right">
-                        <div className="text-xs text-zinc-500">Risk score</div>
-                        <div className="text-2xl font-semibold tabular-nums">{risk}</div>
-                        <div className="mt-1 text-xs text-zinc-500 tabular-nums">
-                          anomalies: {sig.anomalies}
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={() => setExpandedId(isOpen ? null : id)}>
-                          {isOpen ? "Collapse" : "Expand"}
-                        </Button>
-                        <Button onClick={() => setModalRun(r)}>Details</Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {isOpen && (
-                    <div className="mt-5 grid grid-cols-1 gap-3 border-t border-zinc-100 pt-4 sm:grid-cols-12">
-                      <div className="sm:col-span-7">
-                        <div className="text-sm font-semibold">Drivers and signals</div>
-                        <div className="mt-1 text-sm text-zinc-600">
-                          Elevated spatter and melt pool instability increase the probability of part-level quality escape.
-                          Recoater interaction raises the chance of layer streaking and geometric deviation.
-                        </div>
-
-                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                            <div className="text-xs font-medium text-zinc-600">Spatter intensity (proxy)</div>
-                            <div className="mt-2">
-                              <svg width={320} height={74} viewBox="0 0 320 74" className="text-zinc-900">
-                                <path
-                                  d={pathFromSeries(sig.seriesA, 320, 74, 6)}
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                />
-                              </svg>
-                            </div>
-                            <div className="mt-2 text-sm text-zinc-700">
-                              Higher spatter correlates with surface roughness and defect formation.
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                            <div className="text-xs font-medium text-zinc-600">Melt pool stability (proxy)</div>
-                            <div className="mt-2">
-                              <svg width={320} height={74} viewBox="0 0 320 74" className="text-zinc-900">
-                                <path
-                                  d={pathFromSeries(sig.seriesB, 320, 74, 6)}
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                />
-                              </svg>
-                            </div>
-                            <div className="mt-2 text-sm text-zinc-700">
-                              Instability correlates with microstructure variability and mechanical scatter.
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                            <div className="text-xs font-medium text-zinc-600">Plume opacity (proxy)</div>
-                            <div className="mt-2">
-                              <svg width={320} height={74} viewBox="0 0 320 74" className="text-zinc-900">
-                                <path
-                                  d={pathFromSeries(sig.seriesC, 320, 74, 6)}
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                />
-                              </svg>
-                            </div>
-                            <div className="mt-2 text-sm text-zinc-700">
-                              Opacity drift correlates with energy coupling changes and porosity proxies.
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                            <div className="text-xs font-medium text-zinc-600">Contribution breakdown</div>
-                            <div className="mt-3 space-y-3">
-                              <BarMini value01={sig.spatter} label="Spatter → surface & defect risk" />
-                              <BarMini value01={sig.meltPool} label="Melt pool → microstructure risk" />
-                              <BarMini value01={sig.recoater} label="Recoater → layer integrity risk" />
-                              <BarMini value01={sig.plume} label="Plume → coupling drift risk" />
-                              <BarMini value01={1 - sig.gasFlow} label="Gas flow → recirculation risk" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="sm:col-span-5">
-                        <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                          <div className="text-sm font-semibold">Predicted outcomes</div>
-                          <div className="mt-3 space-y-3">
-                            <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                              <div className="text-sm text-zinc-700">CT porosity count (est.)</div>
-                              <div className="text-sm font-semibold tabular-nums text-zinc-900">
-                                {sig.predictedCTPorosity}
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                              <div className="text-sm text-zinc-700">Tensile margin (est.)</div>
-                              <div className="text-sm font-semibold tabular-nums text-zinc-900">
-                                {asPct(sig.tensileMargin)}
-                              </div>
-                            </div>
-                            <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                              <div className="text-sm text-zinc-700">Fatigue risk (est.)</div>
-                              <div className="text-sm font-semibold tabular-nums text-zinc-900">
-                                {asPct(sig.fatigueRisk)}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-3">
-                            <div className="text-xs font-medium text-zinc-600">Disposition</div>
-                            <div className="mt-1 text-sm font-semibold text-zinc-900">
-                              {sig.disposition.label}
-                            </div>
-                            <div className="mt-1 text-sm text-zinc-700">{sig.disposition.detail}</div>
-                          </div>
-
-                          <div className="mt-4">
-                            <div className="text-xs font-medium text-zinc-600">Top drivers</div>
-                            <div className="mt-2 space-y-2">
-                              {sig.topDrivers.map(d => (
-                                <div key={d.name} className="rounded-xl border border-zinc-200 bg-white p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="text-sm font-semibold text-zinc-900">{d.name}</div>
-                                      <div className="mt-1 text-sm text-zinc-700">{d.note}</div>
-                                    </div>
-                                    <div className="text-sm font-semibold tabular-nums text-zinc-900">
-                                      {asPct(d.score)}
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="mt-4 flex flex-wrap gap-2">
-                            <Button variant="secondary" onClick={() => alert("Ticket created (demo).")}>
-                              Create ticket
-                            </Button>
-                            <Button variant="secondary" onClick={() => alert("Report generated (demo).")}>
-                              Generate report
-                            </Button>
-                            <Button onClick={() => alert("Notification sent (demo).")}>Notify</Button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )
-          })}
-
-          {filtered.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-zinc-300 bg-white p-10 text-center text-sm text-zinc-600">
-              No runs match your filters.
-            </div>
-          )}
-        </div>
-      </div>
-
-      <Modal
-        open={!!modalRun}
-        title={modalRun ? `Run ${String((modalRun as any).id)}` : "Run"}
-        subtitle={
-          modalRun
-            ? `Aerospace Production Facility • ${String((modalRun as any).program)} • ${String(
-                (modalRun as any).part
-              )} • ${String((modalRun as any).material)} • ${String((modalRun as any).date)}`
-            : undefined
-        }
-        onClose={() => setModalRun(null)}
-      >
-        {modalRun && (() => {
-          const id = String((modalRun as any).id)
-          const risk = Number((modalRun as any).riskScore ?? 0)
-          const status = riskToStatus(risk)
-          const sig = fakeSignalsForRun(modalRun as any)
-
-          return (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={statusVariant(status) as any}>{status}</Badge>
-                <div className="text-sm text-zinc-600">
-                  Recommended disposition: <span className="font-semibold text-zinc-900">{sig.disposition.label}</span>
+            {/* Chatbot wrapper */}
+            <Card className="border-zinc-800 bg-zinc-900">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between gap-2">
+                  <CardTitle className="text-sm text-zinc-200">Ops Copilot (chat)</CardTitle>
+                  <Button variant="secondary" onClick={() => setChatOpen(v => !v)}>
+                    {chatOpen ? "Hide" : "Show"}
+                  </Button>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-                <div className="sm:col-span-7 rounded-2xl border border-zinc-200 bg-white p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-xs font-medium text-zinc-600">Risk score</div>
-                      <div className="text-3xl font-semibold tabular-nums text-zinc-900">{risk}</div>
-                    </div>
-                    <Sparkline id={id} riskScore={risk} label="overall trend" />
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                      <div className="text-xs font-medium text-zinc-600">Spatter → part quality</div>
-                      <div className="mt-2 text-sm text-zinc-700">
-                        Elevated spatter correlates with surface roughness and defect formation.
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                      <div className="text-xs font-medium text-zinc-600">Melt pool → microstructure</div>
-                      <div className="mt-2 text-sm text-zinc-700">
-                        Instability correlates with microstructure variability and mechanical scatter.
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                      <div className="text-xs font-medium text-zinc-600">Recoater → layer integrity</div>
-                      <div className="mt-2 text-sm text-zinc-700">
-                        Interaction signatures correlate with streaking and geometric deviation.
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                      <div className="text-xs font-medium text-zinc-600">Gas flow → recirculation</div>
-                      <div className="mt-2 text-sm text-zinc-700">
-                        Reduced margin correlates with soot accumulation and spatter recirculation.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="sm:col-span-5 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                  <div className="text-sm font-semibold">Run summary</div>
-                  <div className="mt-3 space-y-3">
-                    <BarMini value01={sig.spatter} label="Spatter intensity" />
-                    <BarMini value01={sig.meltPool} label="Melt pool instability" />
-                    <BarMini value01={sig.recoater} label="Recoater interaction" />
-                    <BarMini value01={sig.plume} label="Plume opacity" />
-                    <BarMini value01={1 - sig.gasFlow} label="Gas flow deficit" />
-                  </div>
-
-                  <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-3">
-                    <div className="text-xs font-medium text-zinc-600">Predicted outcomes</div>
-                    <div className="mt-2 grid grid-cols-1 gap-2">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-700">CT porosity count (est.)</span>
-                        <span className="font-semibold tabular-nums text-zinc-900">{sig.predictedCTPorosity}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-700">Tensile margin (est.)</span>
-                        <span className="font-semibold tabular-nums text-zinc-900">{asPct(sig.tensileMargin)}</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-700">Fatigue risk (est.)</span>
-                        <span className="font-semibold tabular-nums text-zinc-900">{asPct(sig.fatigueRisk)}</span>
-                      </div>
+              </CardHeader>
+              {chatOpen && (
+                <CardContent className="space-y-3">
+                  <div className="max-h-[240px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
+                    <div className="space-y-3 text-sm">
+                      {chat.map((m, idx) => (
+                        <div key={idx} className={m.role === "user" ? "text-right" : "text-left"}>
+                          <div
+                            className={[
+                              "inline-block max-w-[92%] rounded-2xl px-3 py-2",
+                              m.role === "user"
+                                ? "bg-red-600 text-white"
+                                : "bg-zinc-900 text-zinc-100 border border-zinc-800",
+                            ].join(" ")}
+                            style={{ whiteSpace: "pre-wrap" }}
+                          >
+                            {m.content}
+                          </div>
+                        </div>
+                      ))}
+                      <div ref={chatEndRef} />
                     </div>
                   </div>
 
-                  <div className="mt-4 flex gap-2">
-                    <Button onClick={() => alert("Share link copied (demo).")}>Share</Button>
-                    <Button variant="secondary" onClick={() => setModalRun(null)}>
-                      Done
+                  <div className="flex gap-2">
+                    <input
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") onSendChat()
+                      }}
+                      placeholder='Ask: "highest risk part", "summary", "list fails"...'
+                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-500"
+                    />
+                    <Button onClick={onSendChat}>Send</Button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setChat(prev => [...prev, { role: "user", content: "summary" }, { role: "assistant", content: answerChat("summary") }])
+                        scrollChatToEnd()
+                      }}
+                    >
+                      Summary
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setChat(prev => [...prev, { role: "user", content: "highest risk part" }, { role: "assistant", content: answerChat("highest risk part") }])
+                        scrollChatToEnd()
+                      }}
+                    >
+                      Highest risk
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setChat(prev => [...prev, { role: "user", content: "list fails" }, { role: "assistant", content: answerChat("list fails") }])
+                        scrollChatToEnd()
+                      }}
+                    >
+                      List fails
                     </Button>
                   </div>
-                </div>
-              </div>
-            </div>
-          )
-        })()}
-      </Modal>
+                </CardContent>
+              )}
+            </Card>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
