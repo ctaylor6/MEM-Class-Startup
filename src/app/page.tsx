@@ -6,11 +6,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -91,31 +91,29 @@ function fakeSignalsForRun(r: any) {
 
   const risk01 = clamp01(Number(r?.riskScore ?? 0) / 100)
 
-  // conditions, tuned to correlate with risk
   const spatter01 = clamp01(0.18 + 0.75 * risk01 + (rnd() - 0.5) * 0.12)
   const meltPoolInstab01 = clamp01(0.20 + 0.65 * risk01 + (rnd() - 0.5) * 0.14)
   const recoaterInteract01 = clamp01(0.10 + 0.55 * risk01 + (rnd() - 0.5) * 0.20)
   const plumeOpacity01 = clamp01(0.12 + 0.60 * risk01 + (rnd() - 0.5) * 0.16)
-  const gasFlowDeficit01 = clamp01(0.20 + 0.60 * risk01 + (rnd() - 0.5) * 0.14) // higher is worse
+  const gasFlowDeficit01 = clamp01(0.20 + 0.60 * risk01 + (rnd() - 0.5) * 0.14)
 
-  // predicted outcomes
   const predictedCTPorosity = Math.max(0, Math.round(2 + 40 * risk01 + rnd() * 7))
-  const tensileMargin01 = clamp01(0.92 - 0.42 * risk01 + (rnd() - 0.5) * 0.08) // higher better
+  const tensileMargin01 = clamp01(0.92 - 0.42 * risk01 + (rnd() - 0.5) * 0.08)
   const fatigueRisk01 = clamp01(0.10 + 0.78 * risk01 + (rnd() - 0.5) * 0.12)
 
   const disposition =
     risk01 >= 0.72
-      ? { label: "Hold for targeted NDT", detail: "Consistent high-risk signatures. Prevent quality escape." }
+      ? { label: "Hold for targeted NDT", detail: "High-risk signatures. Prevent quality escape." }
       : risk01 >= 0.42
       ? { label: "Proceed with enhanced inspection", detail: "Proceed, but increase sampling and review anomaly windows." }
       : { label: "Proceed", detail: "Within expected process envelope for this program and material." }
 
   const conditions = [
     {
-      key: "Spatter",
-      value01: spatter01,
+      key: "Thermal gradient variance",
+      value01: clamp01(0.12 + 0.78 * risk01 + (rnd() - 0.5) * 0.10),
       qualityEffect:
-        "Higher spatter increases surface roughness, elevates lack-of-fusion probability, and can seed near-surface defects.",
+        "Large gradients raise residual stress and can drive distortion and crack initiation at thin features/edges.",
     },
     {
       key: "Melt pool instability",
@@ -124,24 +122,35 @@ function fakeSignalsForRun(r: any) {
         "Instability increases porosity risk and microstructure variability, raising mechanical property scatter.",
     },
     {
+      key: "Spatter",
+      value01: spatter01,
+      qualityEffect:
+        "Higher spatter increases roughness and can seed lack-of-fusion near edges and overhangs.",
+    },
+    {
       key: "Recoater interaction",
       value01: recoaterInteract01,
       qualityEffect:
-        "Recoater contact or streaking can cause layer defects, geometric deviation, and downstream fusion issues.",
-    },
-    {
-      key: "Plume opacity",
-      value01: plumeOpacity01,
-      qualityEffect:
-        "Opacity drift indicates coupling changes that can shift energy density and drive porosity signatures.",
+        "Recoater contact/streaking can cause layer defects, geometric deviation, and downstream fusion issues.",
     },
     {
       key: "Gas flow deficit",
       value01: gasFlowDeficit01,
       qualityEffect:
-        "Poor flow can recirculate spatter and soot, contaminating the melt pool and elevating defect probability.",
+        "Poor flow can recirculate spatter/soot, changing coupling and elevating defect probability.",
+    },
+    {
+      key: "Plume opacity",
+      value01: plumeOpacity01,
+      qualityEffect:
+        "Opacity drift indicates coupling changes that shift energy density and drive porosity signatures.",
     },
   ].sort((a, b) => b.value01 - a.value01)
+
+  // synthetic “where” signal to match the screenshot vibe
+  const layer = 10 + Math.floor(risk01 * 70 + rnd() * 6)
+  const region = risk01 > 0.55 ? "Blade edge" : "Mid-span"
+  const lot = `lot #${String(id).slice(-2) || "45"}B`
 
   return {
     risk01,
@@ -150,18 +159,16 @@ function fakeSignalsForRun(r: any) {
     tensileMargin01,
     fatigueRisk01,
     disposition,
+    layer,
+    region,
+    lot,
   }
 }
 
-function riskColorClass(risk01: number) {
-  // Loud palette
-  if (risk01 >= 0.7) return "bg-red-600"
-  if (risk01 >= 0.4) return "bg-amber-500"
-  return "bg-emerald-500"
-}
-
-function riskText(risk01: number) {
-  return Math.round(clamp01(risk01) * 100)
+function riskFill(risk01: number) {
+  if (risk01 >= 0.7) return "#ef4444"
+  if (risk01 >= 0.4) return "#f59e0b"
+  return "#22c55e"
 }
 
 function summarizePlate(plateRuns: Run[]) {
@@ -191,8 +198,32 @@ function formatRunLine(r: any) {
   return `${id} (${st}, risk ${risk}): ${program} • ${part} • ${material}`
 }
 
+function makeTensileCurve(risk01: number, seedKey: string) {
+  // Probability density (synthetic) and a spec threshold marker ~ like screenshot.
+  const seed = hashStr("tens|" + seedKey)
+  const rnd = prng(seed)
+
+  const mean = 15.5 - 5.0 * risk01 + (rnd() - 0.5) * 0.6
+  const sigma = 2.6 + 1.2 * risk01 + (rnd() - 0.5) * 0.3
+  const spec = 20.5 // vertical dashed line in screenshot vibe
+
+  const xs: number[] = []
+  for (let x = 0; x <= 28; x += 0.5) xs.push(Number(x.toFixed(1)))
+
+  // unnormalized gaussian then scale to 0..100% for “probability” axis
+  const ys = xs.map(x => Math.exp(-((x - mean) * (x - mean)) / (2 * sigma * sigma)))
+  const maxy = Math.max(...ys, 1e-9)
+
+  const data = xs.map((x, i) => ({
+    x,
+    yPct: (ys[i] / maxy) * 100,
+    spec: spec,
+  }))
+
+  return { data, spec }
+}
+
 export default function Page() {
-  // buildplates
   const buildplates = useMemo(() => {
     const ids = new Set<string>()
     for (const r of runs as any[]) ids.add(assignBuildplateId(r))
@@ -200,17 +231,15 @@ export default function Page() {
   }, [])
 
   const [plateId, setPlateId] = useState<string>(buildplates[0] ?? "BP-1")
-  const [query, setQuery] = useState("")
   const [sort, setSort] = useState<"risk_desc" | "risk_asc" | "id">("risk_desc")
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
 
   // chat
-  const [chatOpen, setChatOpen] = useState(true)
   const [chat, setChat] = useState<ChatMsg[]>([
     {
       role: "assistant",
       content:
-        "Ask about this buildplate. Examples: “highest risk part”, “why is BP risky”, “list fails”, “summary”.",
+        "I can summarize risk, identify top drivers, and suggest immediate actions. Try: “highest risk part”, “why risky”, “list fails”, “actions”.",
     },
   ])
   const [chatInput, setChatInput] = useState("")
@@ -221,23 +250,8 @@ export default function Page() {
   }, [plateId])
 
   const plateRuns = useMemo(() => {
-    const q = normalize(query)
-    const base = plateRunsAll.filter(r => {
-      if (!q) return true
-      const hay = [
-        (r as any)?.id,
-        (r as any)?.program,
-        (r as any)?.part,
-        (r as any)?.material,
-        (r as any)?.date,
-      ]
-        .map(x => String(x ?? ""))
-        .join(" ")
-        .toLowerCase()
-      return hay.includes(q)
-    })
-
-    const sorted = [...base].sort((a, b) => {
+    const base = [...plateRunsAll]
+    const sorted = base.sort((a, b) => {
       const ra = Number((a as any)?.riskScore ?? 0)
       const rb = Number((b as any)?.riskScore ?? 0)
       if (sort === "risk_desc") return rb - ra
@@ -246,9 +260,8 @@ export default function Page() {
       const ib = String((b as any)?.id ?? "")
       return ia.localeCompare(ib)
     })
-
     return sorted
-  }, [plateRunsAll, query, sort])
+  }, [plateRunsAll, sort])
 
   const plateSummary = useMemo(() => summarizePlate(plateRunsAll), [plateRunsAll])
 
@@ -262,16 +275,16 @@ export default function Page() {
     return fakeSignalsForRun(selectedRun as any)
   }, [selectedRun])
 
-  // heatmap grid
+  // buildplate grid
   const PLATE_MM = 300
   const TILE_MM = 30
-  const GRID = Math.round(PLATE_MM / TILE_MM) // 10 x 10
+  const GRID = Math.round(PLATE_MM / TILE_MM)
+
   const tiles = useMemo(() => {
-    // start with a base field and then “inject” risk around each part
     const base: number[] = new Array(GRID * GRID).fill(0).map((_, i) => {
       const seed = hashStr(plateId + "|tile|" + i)
       const rnd = prng(seed)
-      return clamp01(0.12 + rnd() * 0.18)
+      return clamp01(0.10 + rnd() * 0.16)
     })
 
     const addInfluence = (cx: number, cy: number, amp01: number) => {
@@ -282,7 +295,7 @@ export default function Page() {
           const dx = x - cx
           const dy = y - cy
           const d2 = dx * dx + dy * dy
-          const sigma2 = (42 * 42) // influence radius
+          const sigma2 = 42 * 42
           const bump = amp01 * Math.exp(-d2 / (2 * sigma2))
           base[gy * GRID + gx] = clamp01(base[gy * GRID + gx] + bump)
         }
@@ -296,27 +309,7 @@ export default function Page() {
     }
 
     return base
-  }, [plateId, plateRunsAll])
-
-  const chartStatus = useMemo(() => {
-    return [
-      { name: "Fail", value: plateSummary.fail },
-      { name: "Watch", value: plateSummary.watch },
-      { name: "Pass", value: plateSummary.pass },
-    ]
-  }, [plateSummary])
-
-  const chartTopRisks = useMemo(() => {
-    const top = [...plateRunsAll]
-      .sort((a, b) => Number((b as any)?.riskScore ?? 0) - Number((a as any)?.riskScore ?? 0))
-      .slice(0, 6)
-      .map(r => ({
-        id: String((r as any)?.id ?? ""),
-        risk: Number((r as any)?.riskScore ?? 0),
-      }))
-      .reverse()
-    return top
-  }, [plateRunsAll])
+  }, [plateId, plateRunsAll, GRID])
 
   const selectedRunConditionsBar = useMemo(() => {
     if (!selectedSig) return []
@@ -325,6 +318,12 @@ export default function Page() {
       .map(c => ({ name: c.key, value: Math.round(c.value01 * 100) }))
       .reverse()
   }, [selectedSig])
+
+  const tensile = useMemo(() => {
+    const risk01 = selectedSig?.risk01 ?? clamp01(plateSummary.avg / 100)
+    const key = selectedRunId ?? plateId
+    return makeTensileCurve(risk01, key)
+  }, [selectedSig, plateSummary.avg, selectedRunId, plateId])
 
   function scrollChatToEnd() {
     requestAnimationFrame(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }))
@@ -340,7 +339,7 @@ export default function Page() {
     const fails = plateRunsAll.filter(r => riskToStatus(Number((r as any)?.riskScore ?? 0)) === "Fail")
 
     if (p.includes("summary") || p === "help") {
-      return `Plate ${plateId}: ${plateSummary.total} runs, avg risk ${plateSummary.avg}, max risk ${plateSummary.max}. Pass ${plateSummary.pass}, Watch ${plateSummary.watch}, Fail ${plateSummary.fail}.`
+      return `Plate ${plateId}: ${plateSummary.total} runs. Avg risk ${plateSummary.avg}, max risk ${plateSummary.max}. Pass ${plateSummary.pass}, Watch ${plateSummary.watch}, Fail ${plateSummary.fail}.`
     }
 
     if (p.includes("highest") || p.includes("top risk") || p.includes("worst")) {
@@ -356,10 +355,9 @@ export default function Page() {
     }
 
     if (p.includes("why") && (p.includes("risky") || p.includes("risk"))) {
-      const top = sorted.slice(0, Math.min(4, sorted.length)).map(r => fakeSignalsForRun(r as any))
-      // average top condition strengths across top risky runs
+      const topRuns = sorted.slice(0, Math.min(4, sorted.length)).map(r => fakeSignalsForRun(r as any))
       const acc: Record<string, { sum: number; n: number }> = {}
-      for (const s of top) {
+      for (const s of topRuns) {
         for (const c of s.conditions) {
           acc[c.key] = acc[c.key] ?? { sum: 0, n: 0 }
           acc[c.key].sum += c.value01
@@ -372,41 +370,60 @@ export default function Page() {
         .slice(0, 3)
 
       const line = ranked.map(x => `${x.k} (${asPct01(x.avg)})`).join(", ")
-      return `This plate trends risky due to elevated conditions in the highest-risk runs: ${line}.`
+      return `This plate trends risky due to elevated signals in the highest-risk runs: ${line}.`
     }
 
-    // If they mention an ID, try to respond about that run
-    const maybeId = plateRunsAll.find(r => normalize(String((r as any)?.id ?? "")) === p)
-    if (maybeId) {
-      const r = maybeId as any
+    if (p.includes("action") || p.includes("immediate") || p.includes("what should")) {
+      const r = sorted[0] as any
+      const sig = fakeSignalsForRun(r)
+      return `Immediate actions: place lot on “Hold”, inspect region (${sig.region}) around layer ${sig.layer}, confirm sensor calibration (thermal/optical), and review scan logs for that window.`
+    }
+
+    // If they paste a run ID exactly:
+    const exact = plateRunsAll.find(r => normalize(String((r as any)?.id ?? "")) === p)
+    if (exact) {
+      const r = exact as any
       const sig = fakeSignalsForRun(r)
       const top = sig.conditions[0]
       return `${formatRunLine(r)}. Primary driver: ${top.key} (${asPct01(top.value01)}). Effect: ${top.qualityEffect}`
     }
 
-    return `Try: “summary”, “highest risk part”, “list fails”, “why is BP risky”, or paste a run ID exactly.`
+    return `Try: “summary”, “highest risk part”, “list fails”, “why risky”, “actions”, or paste a run ID exactly.`
   }
 
-  function onSendChat() {
-    const text = chatInput.trim()
-    if (!text) return
-    setChat(prev => [...prev, { role: "user", content: text }])
-    const reply = answerChat(text)
-    setChat(prev => [...prev, { role: "user", content: text }, { role: "assistant", content: reply }])
+  function sendChat(text: string) {
+    const t = text.trim()
+    if (!t) return
+    const reply = answerChat(t)
+    setChat(prev => [...prev, { role: "user", content: t }, { role: "assistant", content: reply }])
     setChatInput("")
     scrollChatToEnd()
   }
 
+  function onSelectRun(id: string) {
+    setSelectedRunId(id)
+    const r = plateRunsAll.find(x => String((x as any)?.id ?? "") === id) as any
+    if (!r) return
+    const sig = fakeSignalsForRun(r)
+    const top = sig.conditions[0]
+    const msg = `Anomaly context: ${top.key} elevated in ${sig.region}, layer ${sig.layer}. Risk ${Math.round(sig.risk01 * 100)} indicates ${sig.risk01 >= 0.7 ? "critical" : sig.risk01 >= 0.4 ? "watch" : "low"} issue.`
+    setChat(prev => [...prev, { role: "assistant", content: msg }])
+    scrollChatToEnd()
+  }
+
+  const selectedRisk = Number((selectedRun as any)?.riskScore ?? plateSummary.avg)
+  const selectedRisk01 = clamp01(selectedRisk / 100)
+  const selectedStatus = riskToStatus(selectedRisk)
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <div className="mx-auto max-w-6xl px-6 py-10">
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto max-w-6xl px-6 py-8">
+        {/* Top bar */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
-            <h1 className="text-3xl font-semibold tracking-tight">
-              Qualification Risk Dashboard <span className="text-red-500">LIVE</span>
-            </h1>
-            <p className="mt-2 text-sm text-zinc-300">
-              Simplified view: buildplate, parts, conditions, and quality impact. Signals are synthetic.
+            <h1 className="text-2xl font-semibold tracking-tight">Qualification Risk Dashboard</h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Interactive buildplate view + context-aware guidance (synthetic signals; swap in your model outputs).
             </p>
           </div>
 
@@ -417,7 +434,7 @@ export default function Page() {
                 setPlateId(e.target.value)
                 setSelectedRunId(null)
               }}
-              className="h-10 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-sm outline-none transition focus:border-zinc-500"
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400"
             >
               {buildplates.map(p => (
                 <option key={p} value={p}>
@@ -429,7 +446,7 @@ export default function Page() {
             <select
               value={sort}
               onChange={e => setSort(e.target.value as any)}
-              className="h-10 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-sm outline-none transition focus:border-zinc-500"
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400"
             >
               <option value="risk_desc">Risk high</option>
               <option value="risk_asc">Risk low</option>
@@ -439,347 +456,328 @@ export default function Page() {
             <Button
               variant="secondary"
               onClick={() => {
-                setQuery("")
                 setSelectedRunId(null)
               }}
             >
-              Reset
+              Reset selection
             </Button>
             <Button onClick={() => alert("Export queued (demo).")}>Export</Button>
           </div>
         </div>
 
-        {/* KPI row (loud) */}
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-6">
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Runs on plate</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold">{plateSummary.total}</CardContent>
-          </Card>
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Avg risk</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold text-amber-400">{plateSummary.avg}</CardContent>
-          </Card>
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Max risk</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold text-red-500">{plateSummary.max}</CardContent>
-          </Card>
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Fail</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold text-red-500">{plateSummary.fail}</CardContent>
-          </Card>
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Watch</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold text-amber-400">{plateSummary.watch}</CardContent>
-          </Card>
-          <Card className="border-zinc-800 bg-zinc-900">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-300">Pass</CardTitle>
-            </CardHeader>
-            <CardContent className="text-3xl font-semibold text-emerald-400">{plateSummary.pass}</CardContent>
-          </Card>
-        </div>
-
-        {/* Main: plate heatmap + charts + chat */}
+        {/* Main: left dashboard, right chat */}
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-12">
-          {/* Buildplate heatmap */}
-          <Card className="border-zinc-800 bg-zinc-900 lg:col-span-7">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-zinc-200">Buildplate heatmap (quality risk)</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm text-zinc-300">
-                  Tiles show inferred risk. Dots are parts (runs). Click a dot to inspect conditions.
-                </div>
-                <div className="flex items-center gap-2 text-xs text-zinc-300">
-                  <span className="inline-flex items-center gap-1">
-                    <span className="h-3 w-3 rounded bg-emerald-500" /> Pass
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <span className="h-3 w-3 rounded bg-amber-500" /> Watch
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <span className="h-3 w-3 rounded bg-red-600" /> Fail
-                  </span>
-                </div>
-              </div>
+          {/* LEFT */}
+          <div className="space-y-4 lg:col-span-7">
+            <Card className="border-slate-200 bg-white">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Qualification Risk Dashboard</CardTitle>
+              </CardHeader>
 
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <div className="relative mx-auto w-[min(520px,100%)]">
-                  {/* grid */}
-                  <div
-                    className="grid"
-                    style={{
-                      gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`,
-                      gap: 3,
-                    }}
-                  >
-                    {tiles.map((t, i) => {
-                      const c = riskColorClass(t)
-                      return (
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
+                  {/* Buildplate view */}
+                  <div className="sm:col-span-7">
+                    <div className="text-sm font-semibold text-slate-800">Buildplate view</div>
+                    <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="relative mx-auto w-[min(520px,100%)]">
                         <div
-                          key={i}
-                          className={[
-                            "aspect-square rounded",
-                            c,
-                            "opacity-90",
-                            "ring-1 ring-black/20",
-                          ].join(" ")}
-                          title={`tile risk ${riskText(t)}`}
-                        />
-                      )
-                    })}
+                          className="grid"
+                          style={{
+                            gridTemplateColumns: `repeat(${GRID}, minmax(0, 1fr))`,
+                            gap: 3,
+                          }}
+                        >
+                          {tiles.map((t, i) => (
+                            <div
+                              key={i}
+                              className="aspect-square rounded ring-1 ring-black/5"
+                              style={{ backgroundColor: riskFill(t), opacity: 0.22 + 0.55 * t }}
+                              title={`tile risk ${Math.round(t * 100)}`}
+                            />
+                          ))}
+                        </div>
+
+                        {/* Part markers */}
+                        <div className="pointer-events-none absolute inset-0">
+                          {(plateRunsAll as any[]).map(r => {
+                            const id = String(r?.id ?? "")
+                            const pos = fakePartPlacement(r, PLATE_MM)
+                            const risk = Number(r?.riskScore ?? 0)
+                            const st = riskToStatus(risk)
+                            const fill =
+                              st === "Fail" ? "#ef4444" : st === "Watch" ? "#f59e0b" : "#22c55e"
+
+                            const leftPct = (pos.x / PLATE_MM) * 100
+                            const topPct = (pos.y / PLATE_MM) * 100
+                            const isSel = selectedRunId === id
+
+                            return (
+                              <button
+                                key={id}
+                                type="button"
+                                className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-full"
+                                style={{
+                                  left: `${leftPct}%`,
+                                  top: `${topPct}%`,
+                                  width: 14,
+                                  height: 14,
+                                  background: fill,
+                                  opacity: 0.95,
+                                  boxShadow: "0 0 0 2px rgba(255,255,255,0.95), 0 0 0 3px rgba(15,23,42,0.10)",
+                                  outline: isSel ? "3px solid rgba(59,130,246,0.65)" : "none",
+                                  outlineOffset: 2,
+                                }}
+                                title={`${id} • ${st} • risk ${risk}`}
+                                onClick={() => onSelectRun(id)}
+                              />
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                        <div>Click a dot to inspect part-level drivers.</div>
+                        <div className="flex items-center gap-3">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-3 w-3 rounded" style={{ background: "#22c55e" }} /> Pass
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-3 w-3 rounded" style={{ background: "#f59e0b" }} /> Watch
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="h-3 w-3 rounded" style={{ background: "#ef4444" }} /> Fail
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* part markers */}
-                  <div className="pointer-events-none absolute inset-0">
-                    {(plateRunsAll as any[]).map(r => {
-                      const id = String(r?.id ?? "")
-                      const pos = fakePartPlacement(r, PLATE_MM)
-                      const risk01 = clamp01(Number(r?.riskScore ?? 0) / 100)
-                      const st = riskToStatus(Number(r?.riskScore ?? 0))
-                      const color =
-                        st === "Fail" ? "bg-red-500" : st === "Watch" ? "bg-amber-400" : "bg-emerald-400"
+                  {/* Risk score panel (matches screenshot layout) */}
+                  <div className="sm:col-span-5">
+                    <div className="text-sm font-semibold text-slate-800">Risk score</div>
+                    <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-xs text-slate-500">Selected</div>
+                          <div className="mt-1 text-sm font-semibold text-slate-900">
+                            {selectedRun ? String((selectedRun as any)?.id ?? "") : "No part selected"}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {selectedRun
+                              ? `${String((selectedRun as any)?.program ?? "")} • ${String(
+                                  (selectedRun as any)?.material ?? ""
+                                )}`
+                              : `Plate ${plateId} overview`}
+                          </div>
+                        </div>
 
-                      // map mm -> % within the grid container
-                      const leftPct = (pos.x / PLATE_MM) * 100
-                      const topPct = (pos.y / PLATE_MM) * 100
-                      const isSel = selectedRunId === id
+                        <div className="text-right">
+                          <div className="text-xs text-slate-500">Status</div>
+                          <div className="mt-1">
+                            <Badge variant={statusVariant(selectedStatus) as any}>{selectedStatus}</Badge>
+                          </div>
+                        </div>
+                      </div>
 
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          className={[
-                            "pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2",
-                            "h-4 w-4 rounded-full",
-                            color,
-                            "ring-2 ring-zinc-950",
-                            isSel ? "outline outline-2 outline-white" : "",
-                          ].join(" ")}
-                          style={{ left: `${leftPct}%`, top: `${topPct}%`, opacity: 0.9 }}
-                          title={`${id} risk ${Math.round(risk01 * 100)}`}
-                          onClick={() => setSelectedRunId(id)}
-                        />
-                      )
-                    })}
-                  </div>
-                </div>
-              </div>
+                      <div className="mt-4">
+                        <div className="flex items-baseline justify-between">
+                          <div className="text-sm text-slate-700">Risk Score</div>
+                          <div className="text-lg font-semibold tabular-nums text-slate-900">
+                            {Math.round(selectedRisk01 * 100)}/100
+                          </div>
+                        </div>
 
-              {/* parts on plate */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <div className="text-sm font-semibold text-zinc-100">Parts on this buildplate</div>
-                  <div className="mt-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
-                    <input
-                      value={query}
-                      onChange={e => setQuery(e.target.value)}
-                      placeholder="Filter parts by ID, program, material..."
-                      className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-zinc-500"
-                    />
-                    <div className="mt-3 max-h-[220px] overflow-auto space-y-2 pr-1">
-                      {plateRuns.map(r => {
-                        const id = String((r as any)?.id ?? "")
-                        const risk = Number((r as any)?.riskScore ?? 0)
-                        const st = riskToStatus(risk)
-                        const isSel = selectedRunId === id
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => setSelectedRunId(id)}
-                            className={[
-                              "w-full rounded-xl border px-3 py-2 text-left text-sm transition",
-                              isSel
-                                ? "border-white bg-zinc-900"
-                                : "border-zinc-800 bg-zinc-950 hover:border-zinc-700",
-                            ].join(" ")}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0 truncate font-semibold">{id}</div>
-                              <div className="flex items-center gap-2">
-                                <Badge variant={statusVariant(st) as any}>{st}</Badge>
-                                <span className="tabular-nums text-zinc-200">{risk}</span>
+                        <div className="mt-2 h-2 w-full rounded-full bg-slate-100">
+                          <div
+                            className="h-2 rounded-full"
+                            style={{
+                              width: `${Math.round(selectedRisk01 * 100)}%`,
+                              background: riskFill(selectedRisk01),
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-4 border-t border-slate-100 pt-3 text-sm">
+                        {!selectedSig ? (
+                          <div className="text-slate-600">
+                            Select a part to populate anomaly details and recommended actions.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="text-xs font-semibold text-slate-700">Details</div>
+                            <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                              <div className="rounded-xl bg-slate-50 p-2">
+                                <div className="text-slate-500">Lot</div>
+                                <div className="font-semibold text-slate-800">{selectedSig.lot}</div>
+                              </div>
+                              <div className="rounded-xl bg-slate-50 p-2">
+                                <div className="text-slate-500">Region</div>
+                                <div className="font-semibold text-slate-800">{selectedSig.region}</div>
+                              </div>
+                              <div className="rounded-xl bg-slate-50 p-2">
+                                <div className="text-slate-500">Layer</div>
+                                <div className="font-semibold text-slate-800">{selectedSig.layer}</div>
+                              </div>
+                              <div className="rounded-xl bg-slate-50 p-2">
+                                <div className="text-slate-500">Top anomaly</div>
+                                <div className="font-semibold text-slate-800">{selectedSig.conditions[0]?.key}</div>
                               </div>
                             </div>
-                            <div className="mt-1 truncate text-xs text-zinc-400">
-                              {(r as any)?.program} • {(r as any)?.part} • {(r as any)?.material}
+
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-xs font-semibold text-slate-700">Disposition</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                                {selectedSig.disposition.label}
+                              </div>
+                              <div className="mt-1 text-sm text-slate-600">
+                                {selectedSig.disposition.detail}
+                              </div>
                             </div>
-                          </button>
-                        )
-                      })}
-                      {plateRuns.length === 0 && (
-                        <div className="text-sm text-zinc-400">No matches.</div>
-                      )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant="secondary"
+                          onClick={() => sendChat("actions")}
+                          className="rounded-xl"
+                        >
+                          What immediate actions?
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => sendChat("highest risk part")}
+                          className="rounded-xl"
+                        >
+                          Highest risk
+                        </Button>
+                        <Button
+                          onClick={() => alert("Execute AI recommendations (demo).")}
+                          className="rounded-xl"
+                        >
+                          Execute AI Recommendations
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                {/* selected run conditions */}
+                {/* Tensile Strength Probability (bottom chart like screenshot) */}
                 <div>
-                  <div className="text-sm font-semibold text-zinc-100">Selected part: conditions and quality impact</div>
-                  <div className="mt-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                    {!selectedRun || !selectedSig ? (
-                      <div className="text-sm text-zinc-400">Click a dot or pick a part from the list.</div>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-base font-semibold">{String((selectedRun as any)?.id ?? "")}</div>
-                            <div className="mt-1 text-xs text-zinc-400">
-                              {(selectedRun as any)?.program} • {(selectedRun as any)?.part} • {(selectedRun as any)?.material} •{" "}
-                              {String((selectedRun as any)?.date ?? "")}
-                            </div>
-                          </div>
-                          <div className="text-right">
-                            <div className="text-xs text-zinc-400">Risk</div>
-                            <div className="text-3xl font-semibold text-red-500 tabular-nums">
-                              {Number((selectedRun as any)?.riskScore ?? 0)}
-                            </div>
-                          </div>
-                        </div>
+                  <div className="text-sm font-semibold text-slate-800">Tensile Strength Probability</div>
+                  <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="h-[210px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={tensile.data} margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
+                          <XAxis dataKey="x" tick={{ fill: "#475569", fontSize: 12 }} />
+                          <YAxis tick={{ fill: "#475569", fontSize: 12 }} domain={[0, 105]} />
+                          <Tooltip />
+                          <Area type="monotone" dataKey="yPct" stroke="#2563eb" fill="#60a5fa" fillOpacity={0.25} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
 
-                        <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
-                          <div className="text-xs font-semibold text-zinc-200">Disposition</div>
-                          <div className="mt-1 text-sm font-semibold text-zinc-50">{selectedSig.disposition.label}</div>
-                          <div className="mt-1 text-sm text-zinc-300">{selectedSig.disposition.detail}</div>
-                        </div>
+                    {/* Spec marker */}
+                    <div className="relative -mt-2 h-0">
+                      <div
+                        className="absolute top-[-208px] h-[190px] border-l-2 border-dashed border-slate-300"
+                        style={{
+                          left: `${(tensile.spec / 28) * 100}%`,
+                        }}
+                        title="Spec threshold"
+                      />
+                    </div>
 
-                        {/* condition bar chart */}
-                        <div className="h-[160px] w-full">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={selectedRunConditionsBar} layout="vertical" margin={{ left: 8, right: 10 }}>
-                              <XAxis type="number" domain={[0, 100]} tick={{ fill: "#d4d4d8", fontSize: 12 }} />
-                              <YAxis
-                                type="category"
-                                dataKey="name"
-                                width={120}
-                                tick={{ fill: "#d4d4d8", fontSize: 12 }}
-                              />
-                              <Tooltip />
-                              <Bar dataKey="value">
-                                {selectedRunConditionsBar.map((_, i) => (
-                                  <Cell
-                                    key={i}
-                                    fill={i % 3 === 0 ? "#ef4444" : i % 3 === 1 ? "#f59e0b" : "#22c55e"}
-                                  />
-                                ))}
-                              </Bar>
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-
-                        {/* explicit condition explanations */}
-                        <div className="space-y-2">
-                          {selectedSig.conditions.slice(0, 3).map(c => (
-                            <div key={c.key} className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="text-sm font-semibold text-zinc-50">{c.key}</div>
-                                <div className="text-sm font-semibold text-zinc-50 tabular-nums">
-                                  {asPct01(c.value01)}
-                                </div>
-                              </div>
-                              <div className="mt-1 text-sm text-zinc-300">{c.qualityEffect}</div>
-                            </div>
-                          ))}
-                        </div>
-
-                        {/* predicted outcomes */}
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
-                            <div className="text-xs text-zinc-300">CT porosity (est.)</div>
-                            <div className="mt-1 text-xl font-semibold text-red-400 tabular-nums">
-                              {selectedSig.predictedCTPorosity}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
-                            <div className="text-xs text-zinc-300">Tensile margin (est.)</div>
-                            <div className="mt-1 text-xl font-semibold text-emerald-300 tabular-nums">
-                              {asPct01(selectedSig.tensileMargin01)}
-                            </div>
-                          </div>
-                          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-3">
-                            <div className="text-xs text-zinc-300">Fatigue risk (est.)</div>
-                            <div className="mt-1 text-xl font-semibold text-amber-300 tabular-nums">
-                              {asPct01(selectedSig.fatigueRisk01)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                    <div className="mt-2 text-xs text-slate-600">
+                      Dashed line shows a nominal spec threshold (demo).
+                    </div>
                   </div>
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Right column: charts + chat */}
-          <div className="space-y-4 lg:col-span-5">
-            <Card className="border-zinc-800 bg-zinc-900">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-zinc-200">Plate status mix (pie)</CardTitle>
-              </CardHeader>
-              <CardContent className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Tooltip />
-                    <Pie data={chartStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85}>
-                      <Cell fill="#ef4444" />
-                      <Cell fill="#f59e0b" />
-                      <Cell fill="#22c55e" />
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
               </CardContent>
             </Card>
 
-            <Card className="border-zinc-800 bg-zinc-900">
+            {/* Part-level drivers (compact) */}
+            <Card className="border-slate-200 bg-white">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-zinc-200">Top risk parts (bar)</CardTitle>
+                <CardTitle className="text-base">Primary drivers</CardTitle>
               </CardHeader>
-              <CardContent className="h-[220px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartTopRisks} margin={{ left: 8, right: 10 }}>
-                    <XAxis dataKey="id" tick={{ fill: "#d4d4d8", fontSize: 11 }} />
-                    <YAxis tick={{ fill: "#d4d4d8", fontSize: 12 }} domain={[0, 100]} />
-                    <Tooltip />
-                    <Bar dataKey="risk">
-                      {chartTopRisks.map((d, i) => (
-                        <Cell
-                          key={i}
-                          fill={d.risk >= 70 ? "#ef4444" : d.risk >= 40 ? "#f59e0b" : "#22c55e"}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            {/* Chatbot wrapper */}
-            <Card className="border-zinc-800 bg-zinc-900">
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between gap-2">
-                  <CardTitle className="text-sm text-zinc-200">Ops Copilot (chat)</CardTitle>
-                  <Button variant="secondary" onClick={() => setChatOpen(v => !v)}>
-                    {chatOpen ? "Hide" : "Show"}
-                  </Button>
+              <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-12">
+                <div className="sm:col-span-7">
+                  <div className="h-[180px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={selectedRunConditionsBar} layout="vertical" margin={{ left: 10, right: 10 }}>
+                        <XAxis type="number" domain={[0, 100]} tick={{ fill: "#475569", fontSize: 12 }} />
+                        <YAxis type="category" dataKey="name" width={160} tick={{ fill: "#475569", fontSize: 12 }} />
+                        <Tooltip />
+                        <Bar dataKey="value">
+                          {selectedRunConditionsBar.map((d, i) => (
+                            <Cell
+                              key={i}
+                              fill={
+                                d.value >= 70 ? "#ef4444" : d.value >= 40 ? "#f59e0b" : "#22c55e"
+                              }
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
                 </div>
+
+                <div className="sm:col-span-5">
+                  {!selectedSig ? (
+                    <div className="text-sm text-slate-600">Select a part to see driver explanations.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {selectedSig.conditions.slice(0, 2).map(c => (
+                        <div key={c.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-slate-900">{c.key}</div>
+                            <div className="text-sm font-semibold tabular-nums text-slate-900">{asPct01(c.value01)}</div>
+                          </div>
+                          <div className="mt-1 text-sm text-slate-600">{c.qualityEffect}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* RIGHT: chat guidance */}
+          <div className="lg:col-span-5">
+            <Card className="border-slate-200 bg-white">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">AI Context-Aware Guidance</CardTitle>
               </CardHeader>
-              {chatOpen && (
-                <CardContent className="space-y-3">
-                  <div className="max-h-[240px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950 p-3">
+
+              <CardContent className="space-y-3">
+                {/* “Detected anomaly” summary bubble */}
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  {selectedSig ? (
+                    <>
+                      <div className="font-semibold text-slate-900">Anomaly Detected</div>
+                      <div className="mt-1">
+                        {selectedSig.conditions[0]?.key} in {selectedSig.region}, layer {selectedSig.layer}. Risk{" "}
+                        {Math.round(selectedSig.risk01 * 100)} indicates{" "}
+                        {selectedSig.risk01 >= 0.7 ? "critical issue" : selectedSig.risk01 >= 0.4 ? "elevated risk" : "low risk"}.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="font-semibold text-slate-900">Select a part to start</div>
+                      <div className="mt-1">Click a buildplate dot to populate anomaly context and recommendations.</div>
+                    </>
+                  )}
+                </div>
+
+                {/* Chat */}
+                <div className="rounded-2xl border border-slate-200 bg-white">
+                  <div className="max-h-[340px] overflow-auto p-3">
                     <div className="space-y-3 text-sm">
                       {chat.map((m, idx) => (
                         <div key={idx} className={m.role === "user" ? "text-right" : "text-left"}>
@@ -787,8 +785,8 @@ export default function Page() {
                             className={[
                               "inline-block max-w-[92%] rounded-2xl px-3 py-2",
                               m.role === "user"
-                                ? "bg-red-600 text-white"
-                                : "bg-zinc-900 text-zinc-100 border border-zinc-800",
+                                ? "bg-blue-600 text-white"
+                                : "bg-slate-50 text-slate-800 border border-slate-200",
                             ].join(" ")}
                             style={{ whiteSpace: "pre-wrap" }}
                           >
@@ -800,50 +798,90 @@ export default function Page() {
                     </div>
                   </div>
 
-                  <div className="flex gap-2">
-                    <input
-                      value={chatInput}
-                      onChange={e => setChatInput(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") onSendChat()
-                      }}
-                      placeholder='Ask: "highest risk part", "summary", "list fails"...'
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-zinc-500"
-                    />
-                    <Button onClick={onSendChat}>Send</Button>
-                  </div>
+                  <div className="border-t border-slate-200 p-3">
+                    <div className="flex gap-2">
+                      <input
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") sendChat(chatInput)
+                        }}
+                        placeholder='Ask: "actions", "summary", "list fails"...'
+                        className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
+                      />
+                      <Button onClick={() => sendChat(chatInput)} className="rounded-xl">
+                        Send
+                      </Button>
+                    </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={() => {
-                        setChat(prev => [...prev, { role: "user", content: "summary" }, { role: "assistant", content: answerChat("summary") }])
-                        scrollChatToEnd()
-                      }}
-                    >
-                      Summary
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onClick={() => {
-                        setChat(prev => [...prev, { role: "user", content: "highest risk part" }, { role: "assistant", content: answerChat("highest risk part") }])
-                        scrollChatToEnd()
-                      }}
-                    >
-                      Highest risk
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onClick={() => {
-                        setChat(prev => [...prev, { role: "user", content: "list fails" }, { role: "assistant", content: answerChat("list fails") }])
-                        scrollChatToEnd()
-                      }}
-                    >
-                      List fails
-                    </Button>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Button variant="secondary" onClick={() => sendChat("summary")} className="rounded-xl">
+                        Summary
+                      </Button>
+                      <Button variant="secondary" onClick={() => sendChat("highest risk part")} className="rounded-xl">
+                        Highest risk
+                      </Button>
+                      <Button variant="secondary" onClick={() => sendChat("list fails")} className="rounded-xl">
+                        List fails
+                      </Button>
+                      <Button variant="secondary" onClick={() => sendChat("actions")} className="rounded-xl">
+                        Actions
+                      </Button>
+                    </div>
                   </div>
-                </CardContent>
-              )}
+                </div>
+
+                {/* small plate KPI strip */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="text-xs text-slate-500">Avg risk</div>
+                    <div className="mt-1 text-lg font-semibold tabular-nums">{plateSummary.avg}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="text-xs text-slate-500">Max risk</div>
+                    <div className="mt-1 text-lg font-semibold tabular-nums">{plateSummary.max}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                    <div className="text-xs text-slate-500">Fails</div>
+                    <div className="mt-1 text-lg font-semibold tabular-nums">{plateSummary.fail}</div>
+                  </div>
+                </div>
+
+                {/* quick part list (minimal) */}
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="text-sm font-semibold text-slate-800">Parts (sorted)</div>
+                  <div className="mt-2 max-h-[220px] overflow-auto space-y-2 pr-1">
+                    {plateRuns.slice(0, 12).map(r => {
+                      const id = String((r as any)?.id ?? "")
+                      const risk = Number((r as any)?.riskScore ?? 0)
+                      const st = riskToStatus(risk)
+                      const isSel = selectedRunId === id
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => onSelectRun(id)}
+                          className={[
+                            "w-full rounded-xl border px-3 py-2 text-left text-sm transition",
+                            isSel ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white hover:bg-slate-50",
+                          ].join(" ")}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0 truncate font-semibold text-slate-900">{id}</div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={statusVariant(st) as any}>{st}</Badge>
+                              <span className="tabular-nums text-slate-700">{risk}</span>
+                            </div>
+                          </div>
+                          <div className="mt-1 truncate text-xs text-slate-500">
+                            {(r as any)?.program} • {(r as any)?.part} • {(r as any)?.material}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </CardContent>
             </Card>
           </div>
         </div>
