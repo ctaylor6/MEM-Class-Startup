@@ -19,6 +19,7 @@ import {
 
 type Run = (typeof runs)[number]
 type Status = "Pass" | "Watch" | "Fail"
+type TolBand = "In tolerance" | "Watch band" | "Out of tolerance"
 
 function clamp01(x: number) {
   return Math.max(0, Math.min(1, x))
@@ -59,10 +60,6 @@ function prng(seed: number) {
   }
 }
 
-/**
- * Synthetic plate assignment and placement.
- * If your data already has buildplateId + x/y, swap this out.
- */
 function assignBuildplateId(r: any) {
   const id = String(r?.id ?? "")
   const seed = hashStr(String(r?.program ?? "") + "|" + String(r?.material ?? "") + "|" + id)
@@ -80,10 +77,134 @@ function fakePartPlacement(r: any, plateSize = 300) {
   return { x, y }
 }
 
-/**
- * Signals + condition drivers with explicit quality effect.
- * These are synthetic, but structured so your real model outputs can drop in.
- */
+type ToleranceDef = {
+  low: number
+  watch: number
+  high: number
+  direction: "max" | "min"
+  unit: string
+  adjust: string
+}
+
+const METRIC_TOLERANCES: Record<string, ToleranceDef> = {
+  "Thermal gradient variance": {
+    low: 0,
+    watch: 0.45,
+    high: 0.65,
+    direction: "max",
+    unit: "index",
+    adjust: "reduce thermal concentration, review scan path and local energy input",
+  },
+  "Melt pool instability": {
+    low: 0,
+    watch: 0.40,
+    high: 0.60,
+    direction: "max",
+    unit: "index",
+    adjust: "stabilize melt pool by tuning power, speed, and hatch overlap",
+  },
+  "Spatter": {
+    low: 0,
+    watch: 0.38,
+    high: 0.58,
+    direction: "max",
+    unit: "index",
+    adjust: "check shielding flow and reduce excessive energy density",
+  },
+  "Recoater interaction": {
+    low: 0,
+    watch: 0.30,
+    high: 0.50,
+    direction: "max",
+    unit: "index",
+    adjust: "inspect powder uniformity and recoater clearance before next pass",
+  },
+  "Gas flow deficit": {
+    low: 0,
+    watch: 0.35,
+    high: 0.55,
+    direction: "max",
+    unit: "index",
+    adjust: "inspect gas flow path, filter condition, and chamber recirculation",
+  },
+  "Plume opacity": {
+    low: 0,
+    watch: 0.40,
+    high: 0.60,
+    direction: "max",
+    unit: "index",
+    adjust: "review plume extraction and confirm optical path stability",
+  },
+  "Predicted CT porosity": {
+    low: 0,
+    watch: 12,
+    high: 22,
+    direction: "max",
+    unit: "count",
+    adjust: "route part for targeted NDT and reduce defect-driving thermal instability",
+  },
+  "Tensile margin": {
+    low: 0.82,
+    watch: 0.74,
+    high: 0,
+    direction: "min",
+    unit: "ratio",
+    adjust: "increase process stability before release and review high-risk windows",
+  },
+  "Fatigue risk": {
+    low: 0,
+    watch: 0.42,
+    high: 0.62,
+    direction: "max",
+    unit: "index",
+    adjust: "inspect hotspot regions and reduce pore-driving instability before next build",
+  },
+}
+
+function toleranceBand(metricName: string, value: number): TolBand {
+  const t = METRIC_TOLERANCES[metricName]
+  if (!t) {
+    if (value >= 0.7) return "Out of tolerance"
+    if (value >= 0.4) return "Watch band"
+    return "In tolerance"
+  }
+
+  if (t.direction === "max") {
+    if (value >= t.high) return "Out of tolerance"
+    if (value >= t.watch) return "Watch band"
+    return "In tolerance"
+  }
+
+  if (value <= t.watch) return "Out of tolerance"
+  if (value <= t.low) return "Watch band"
+  return "In tolerance"
+}
+
+function bandColor(b: TolBand) {
+  if (b === "Out of tolerance") return "#ef4444"
+  if (b === "Watch band") return "#f59e0b"
+  return "#22c55e"
+}
+
+function formatTolerance(metricName: string) {
+  const t = METRIC_TOLERANCES[metricName]
+  if (!t) return "In tolerance < 40%, Watch 40 to 69%, Out ≥ 70%"
+
+  if (t.direction === "max") {
+    return `In tolerance < ${Math.round(t.watch * 100)}%, Watch ${Math.round(t.watch * 100)} to ${Math.round(
+      t.high * 100
+    ) - 1}%, Out ≥ ${Math.round(t.high * 100)}%`
+  }
+
+  return `In tolerance > ${Math.round(t.low * 100)}%, Watch ${Math.round(t.watch * 100)} to ${Math.round(
+    t.low * 100
+  )}%, Out ≤ ${Math.round(t.watch * 100)}%`
+}
+
+function metricAdjustment(metricName: string) {
+  return METRIC_TOLERANCES[metricName]?.adjust ?? "review process settings and inspect flagged regions"
+}
+
 function fakeSignalsForRun(r: any) {
   const id = String(r?.id ?? "")
   const seed = hashStr("sig|" + id + "|" + String(r?.program ?? "") + "|" + String(r?.part ?? ""))
@@ -113,7 +234,7 @@ function fakeSignalsForRun(r: any) {
       key: "Thermal gradient variance",
       value01: clamp01(0.12 + 0.78 * risk01 + (rnd() - 0.5) * 0.10),
       qualityEffect:
-        "Large gradients raise residual stress and can drive distortion and crack initiation at thin features/edges.",
+        "Large gradients raise residual stress and can drive distortion and crack initiation at thin features and edges.",
     },
     {
       key: "Melt pool instability",
@@ -131,13 +252,13 @@ function fakeSignalsForRun(r: any) {
       key: "Recoater interaction",
       value01: recoaterInteract01,
       qualityEffect:
-        "Recoater contact/streaking can cause layer defects, geometric deviation, and downstream fusion issues.",
+        "Recoater contact or streaking can cause layer defects, geometric deviation, and downstream fusion issues.",
     },
     {
       key: "Gas flow deficit",
       value01: gasFlowDeficit01,
       qualityEffect:
-        "Poor flow can recirculate spatter/soot, changing coupling and elevating defect probability.",
+        "Poor flow can recirculate spatter and soot, changing coupling and elevating defect probability.",
     },
     {
       key: "Plume opacity",
@@ -145,12 +266,45 @@ function fakeSignalsForRun(r: any) {
       qualityEffect:
         "Opacity drift indicates coupling changes that shift energy density and drive porosity signatures.",
     },
-  ].sort((a, b) => b.value01 - a.value01)
+  ]
+    .map(c => ({
+      ...c,
+      band: toleranceBand(c.key, c.value01),
+      toleranceText: formatTolerance(c.key),
+      adjust: metricAdjustment(c.key),
+    }))
+    .sort((a, b) => b.value01 - a.value01)
 
-  // synthetic “where” signal to match the screenshot vibe
   const layer = 10 + Math.floor(risk01 * 70 + rnd() * 6)
   const region = risk01 > 0.55 ? "Blade edge" : "Mid-span"
   const lot = `lot #${String(id).slice(-2) || "45"}B`
+
+  const summaryMetrics = [
+    {
+      key: "Predicted CT porosity",
+      display: String(predictedCTPorosity),
+      rawValue: predictedCTPorosity,
+      band: toleranceBand("Predicted CT porosity", predictedCTPorosity),
+      toleranceText: "In tolerance < 12, Watch 12 to 21, Out ≥ 22",
+      adjust: metricAdjustment("Predicted CT porosity"),
+    },
+    {
+      key: "Tensile margin",
+      display: asPct01(tensileMargin01),
+      rawValue: tensileMargin01,
+      band: toleranceBand("Tensile margin", tensileMargin01),
+      toleranceText: "In tolerance > 82%, Watch 74 to 82%, Out ≤ 74%",
+      adjust: metricAdjustment("Tensile margin"),
+    },
+    {
+      key: "Fatigue risk",
+      display: asPct01(fatigueRisk01),
+      rawValue: fatigueRisk01,
+      band: toleranceBand("Fatigue risk", fatigueRisk01),
+      toleranceText: "In tolerance < 42%, Watch 42 to 61%, Out ≥ 62%",
+      adjust: metricAdjustment("Fatigue risk"),
+    },
+  ]
 
   return {
     risk01,
@@ -162,6 +316,7 @@ function fakeSignalsForRun(r: any) {
     layer,
     region,
     lot,
+    summaryMetrics,
   }
 }
 
@@ -199,18 +354,16 @@ function formatRunLine(r: any) {
 }
 
 function makeTensileCurve(risk01: number, seedKey: string) {
-  // Probability density (synthetic) and a spec threshold marker ~ like screenshot.
   const seed = hashStr("tens|" + seedKey)
   const rnd = prng(seed)
 
   const mean = 15.5 - 5.0 * risk01 + (rnd() - 0.5) * 0.6
   const sigma = 2.6 + 1.2 * risk01 + (rnd() - 0.5) * 0.3
-  const spec = 20.5 // vertical dashed line in screenshot vibe
+  const spec = 20.5
 
   const xs: number[] = []
   for (let x = 0; x <= 28; x += 0.5) xs.push(Number(x.toFixed(1)))
 
-  // unnormalized gaussian then scale to 0..100% for “probability” axis
   const ys = xs.map(x => Math.exp(-((x - mean) * (x - mean)) / (2 * sigma * sigma)))
   const maxy = Math.max(...ys, 1e-9)
 
@@ -223,6 +376,37 @@ function makeTensileCurve(risk01: number, seedKey: string) {
   return { data, spec }
 }
 
+function buildFakeEmailSummary(plateId: string, plateRunsAll: Run[]) {
+  const highRisk = [...plateRunsAll]
+    .filter(r => Number((r as any)?.riskScore ?? 0) >= 70)
+    .sort((a, b) => Number((b as any)?.riskScore ?? 0) - Number((a as any)?.riskScore ?? 0))
+    .slice(0, 8)
+
+  if (!highRisk.length) {
+    return {
+      subject: `Shift Summary | ${plateId} | No high-risk runs`,
+      body: `Operator,\n\nNo high-risk runs are currently flagged on ${plateId}.\n\nRecommended action: continue standard process monitoring.\n`,
+    }
+  }
+
+  const lines = highRisk.map(r => {
+    const sig = fakeSignalsForRun(r as any)
+    const top = sig.conditions[0]
+    return `• ${String((r as any)?.id ?? "")}: risk ${Number((r as any)?.riskScore ?? 0)}, ${top.key} ${asPct01(
+      top.value01
+    )}, action: ${top.adjust}.`
+  })
+
+  return {
+    subject: `Shift Summary | ${plateId} | High-risk runs`,
+    body:
+      `Operator,\n\n` +
+      `Below is the current list of high-risk runs before shift change for ${plateId}.\n\n` +
+      `${lines.join("\n")}\n\n` +
+      `Recommended action: review flagged runs first, inspect hotspot regions, and hold any run that remains out of tolerance.\n`,
+  }
+}
+
 export default function Page() {
   const buildplates = useMemo(() => {
     const ids = new Set<string>()
@@ -233,13 +417,13 @@ export default function Page() {
   const [plateId, setPlateId] = useState<string>(buildplates[0] ?? "BP-1")
   const [sort, setSort] = useState<"risk_desc" | "risk_asc" | "id">("risk_desc")
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [emailQueued, setEmailQueued] = useState(false)
 
-  // chat
   const [chat, setChat] = useState<ChatMsg[]>([
     {
       role: "assistant",
       content:
-        "I can summarize risk, identify top drivers, and suggest immediate actions. Try: “highest risk part”, “why risky”, “list fails”, “actions”.",
+        "I can summarize risk, identify top drivers, explain tolerance status, and suggest immediate actions. Try: “highest risk part”, “why risky”, “out of tolerance”, “list fails”, “actions”.",
     },
   ])
   const [chatInput, setChatInput] = useState("")
@@ -275,7 +459,8 @@ export default function Page() {
     return fakeSignalsForRun(selectedRun as any)
   }, [selectedRun])
 
-  // buildplate grid
+  const emailSummary = useMemo(() => buildFakeEmailSummary(plateId, plateRunsAll), [plateId, plateRunsAll])
+
   const PLATE_MM = 300
   const TILE_MM = 30
   const GRID = Math.round(PLATE_MM / TILE_MM)
@@ -373,22 +558,40 @@ export default function Page() {
       return `This plate trends risky due to elevated signals in the highest-risk runs: ${line}.`
     }
 
+    if (p.includes("out of tolerance") || p.includes("tolerance")) {
+      if (!selectedRun) {
+        return "Select a part first. I will then show which metrics are in tolerance, in the watch band, or out of tolerance, along with suggested adjustments."
+      }
+      const out = selectedSig?.conditions.filter(c => c.band === "Out of tolerance") ?? []
+      const watch = selectedSig?.conditions.filter(c => c.band === "Watch band") ?? []
+      if (!out.length && !watch.length) {
+        return "Selected part is currently within tolerance on the primary driver metrics. Continue standard monitoring."
+      }
+      const outTxt = out.slice(0, 2).map(c => `${c.key} is out of tolerance, adjust: ${c.adjust}`).join("; ")
+      const watchTxt = watch.slice(0, 2).map(c => `${c.key} is in watch band`).join("; ")
+      return [outTxt, watchTxt].filter(Boolean).join(" ")
+    }
+
     if (p.includes("action") || p.includes("immediate") || p.includes("what should")) {
       const r = sorted[0] as any
       const sig = fakeSignalsForRun(r)
-      return `Immediate actions: place lot on “Hold”, inspect region (${sig.region}) around layer ${sig.layer}, confirm sensor calibration (thermal/optical), and review scan logs for that window.`
+      const top = sig.conditions[0]
+      return `Immediate actions: place lot on Hold, inspect ${sig.region} around layer ${sig.layer}, confirm sensor calibration, and adjust ${top.key.toLowerCase()} driver by: ${top.adjust}.`
     }
 
-    // If they paste a run ID exactly:
+    if (p.includes("email")) {
+      return `Prepared operator summary.\nSubject: ${emailSummary.subject}\n\n${emailSummary.body}`
+    }
+
     const exact = plateRunsAll.find(r => normalize(String((r as any)?.id ?? "")) === p)
     if (exact) {
       const r = exact as any
       const sig = fakeSignalsForRun(r)
       const top = sig.conditions[0]
-      return `${formatRunLine(r)}. Primary driver: ${top.key} (${asPct01(top.value01)}). Effect: ${top.qualityEffect}`
+      return `${formatRunLine(r)}. Primary driver: ${top.key} (${asPct01(top.value01)}). ${top.band}. ${top.toleranceText}. Effect: ${top.qualityEffect} Adjust: ${top.adjust}.`
     }
 
-    return `Try: “summary”, “highest risk part”, “list fails”, “why risky”, “actions”, or paste a run ID exactly.`
+    return `Try: “summary”, “highest risk part”, “list fails”, “why risky”, “out of tolerance”, “email summary”, “actions”, or paste a run ID exactly.`
   }
 
   function sendChat(text: string) {
@@ -406,7 +609,9 @@ export default function Page() {
     if (!r) return
     const sig = fakeSignalsForRun(r)
     const top = sig.conditions[0]
-    const msg = `Anomaly context: ${top.key} elevated in ${sig.region}, layer ${sig.layer}. Risk ${Math.round(sig.risk01 * 100)} indicates ${sig.risk01 >= 0.7 ? "critical" : sig.risk01 >= 0.4 ? "watch" : "low"} issue.`
+    const msg = `${top.key} elevated in ${sig.region}, layer ${sig.layer}. Risk ${Math.round(
+      sig.risk01 * 100
+    )}. ${top.band}. ${top.toleranceText}. Adjust: ${top.adjust}.`
     setChat(prev => [...prev, { role: "assistant", content: msg }])
     scrollChatToEnd()
   }
@@ -418,7 +623,6 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="mx-auto max-w-6xl px-6 py-8">
-        {/* Top bar */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <h1 className="text-2xl font-semibold tracking-tight">Qualification Risk Dashboard</h1>
@@ -433,6 +637,7 @@ export default function Page() {
               onChange={e => {
                 setPlateId(e.target.value)
                 setSelectedRunId(null)
+                setEmailQueued(false)
               }}
               className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-slate-400"
             >
@@ -465,9 +670,7 @@ export default function Page() {
           </div>
         </div>
 
-        {/* Main: left dashboard, right chat */}
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-12">
-          {/* LEFT */}
           <div className="space-y-4 lg:col-span-7">
             <Card className="border-slate-200 bg-white">
               <CardHeader className="pb-3">
@@ -476,7 +679,6 @@ export default function Page() {
 
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-12">
-                  {/* Buildplate view */}
                   <div className="sm:col-span-7">
                     <div className="text-sm font-semibold text-slate-800">Buildplate view</div>
                     <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -498,7 +700,6 @@ export default function Page() {
                           ))}
                         </div>
 
-                        {/* Part markers */}
                         <div className="pointer-events-none absolute inset-0">
                           {(plateRunsAll as any[]).map(r => {
                             const id = String(r?.id ?? "")
@@ -553,7 +754,6 @@ export default function Page() {
                     </div>
                   </div>
 
-                  {/* Risk score panel (matches screenshot layout) */}
                   <div className="sm:col-span-5">
                     <div className="text-sm font-semibold text-slate-800">Risk score</div>
                     <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-4">
@@ -597,6 +797,9 @@ export default function Page() {
                             }}
                           />
                         </div>
+                        <div className="mt-2 text-xs text-slate-600">
+                          Risk thresholds: Pass &lt; 40, Watch 40 to 69, Fail ≥ 70
+                        </div>
                       </div>
 
                       <div className="mt-4 border-t border-slate-100 pt-3 text-sm">
@@ -626,6 +829,26 @@ export default function Page() {
                               </div>
                             </div>
 
+                            <div className="grid grid-cols-1 gap-2">
+                              {selectedSig.summaryMetrics.map(m => (
+                                <div key={m.key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-xs font-semibold text-slate-700">{m.key}</div>
+                                    <div className="text-sm font-semibold text-slate-900">{m.display}</div>
+                                  </div>
+                                  <div className="mt-1 flex items-center gap-2 text-xs">
+                                    <span
+                                      className="inline-block h-2.5 w-2.5 rounded-full"
+                                      style={{ background: bandColor(m.band) }}
+                                    />
+                                    <span className="font-semibold text-slate-800">{m.band}</span>
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-600">{m.toleranceText}</div>
+                                  <div className="mt-1 text-xs text-slate-600">Adjust: {m.adjust}</div>
+                                </div>
+                              ))}
+                            </div>
+
                             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                               <div className="text-xs font-semibold text-slate-700">Disposition</div>
                               <div className="mt-1 text-sm font-semibold text-slate-900">
@@ -649,6 +872,13 @@ export default function Page() {
                         </Button>
                         <Button
                           variant="secondary"
+                          onClick={() => sendChat("out of tolerance")}
+                          className="rounded-xl"
+                        >
+                          Out of tolerance?
+                        </Button>
+                        <Button
+                          variant="secondary"
                           onClick={() => sendChat("highest risk part")}
                           className="rounded-xl"
                         >
@@ -665,7 +895,6 @@ export default function Page() {
                   </div>
                 </div>
 
-                {/* Tensile Strength Probability (bottom chart like screenshot) */}
                 <div>
                   <div className="text-sm font-semibold text-slate-800">Tensile Strength Probability</div>
                   <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-4">
@@ -680,7 +909,6 @@ export default function Page() {
                       </ResponsiveContainer>
                     </div>
 
-                    {/* Spec marker */}
                     <div className="relative -mt-2 h-0">
                       <div
                         className="absolute top-[-208px] h-[190px] border-l-2 border-dashed border-slate-300"
@@ -699,7 +927,6 @@ export default function Page() {
               </CardContent>
             </Card>
 
-            {/* Part-level drivers (compact) */}
             <Card className="border-slate-200 bg-white">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Primary drivers</CardTitle>
@@ -738,7 +965,12 @@ export default function Page() {
                             <div className="text-sm font-semibold text-slate-900">{c.key}</div>
                             <div className="text-sm font-semibold tabular-nums text-slate-900">{asPct01(c.value01)}</div>
                           </div>
+                          <div className="mt-1 text-xs font-semibold" style={{ color: bandColor(c.band) }}>
+                            {c.band}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-600">{c.toleranceText}</div>
                           <div className="mt-1 text-sm text-slate-600">{c.qualityEffect}</div>
+                          <div className="mt-1 text-sm text-slate-700">Adjust: {c.adjust}</div>
                         </div>
                       ))}
                     </div>
@@ -748,7 +980,6 @@ export default function Page() {
             </Card>
           </div>
 
-          {/* RIGHT: chat guidance */}
           <div className="lg:col-span-5">
             <Card className="border-slate-200 bg-white">
               <CardHeader className="pb-2">
@@ -756,7 +987,6 @@ export default function Page() {
               </CardHeader>
 
               <CardContent className="space-y-3">
-                {/* “Detected anomaly” summary bubble */}
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                   {selectedSig ? (
                     <>
@@ -765,6 +995,12 @@ export default function Page() {
                         {selectedSig.conditions[0]?.key} in {selectedSig.region}, layer {selectedSig.layer}. Risk{" "}
                         {Math.round(selectedSig.risk01 * 100)} indicates{" "}
                         {selectedSig.risk01 >= 0.7 ? "critical issue" : selectedSig.risk01 >= 0.4 ? "elevated risk" : "low risk"}.
+                      </div>
+                      <div className="mt-2 text-xs text-slate-600">
+                        {selectedSig.conditions[0]?.band}. {selectedSig.conditions[0]?.toleranceText}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-600">
+                        Adjust: {selectedSig.conditions[0]?.adjust}
                       </div>
                     </>
                   ) : (
@@ -775,7 +1011,6 @@ export default function Page() {
                   )}
                 </div>
 
-                {/* Chat */}
                 <div className="rounded-2xl border border-slate-200 bg-white">
                   <div className="max-h-[340px] overflow-auto p-3">
                     <div className="space-y-3 text-sm">
@@ -806,7 +1041,7 @@ export default function Page() {
                         onKeyDown={e => {
                           if (e.key === "Enter") sendChat(chatInput)
                         }}
-                        placeholder='Ask: "actions", "summary", "list fails"...'
+                        placeholder='Ask: "actions", "summary", "email summary"...'
                         className="flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400"
                       />
                       <Button onClick={() => sendChat(chatInput)} className="rounded-xl">
@@ -824,14 +1059,45 @@ export default function Page() {
                       <Button variant="secondary" onClick={() => sendChat("list fails")} className="rounded-xl">
                         List fails
                       </Button>
-                      <Button variant="secondary" onClick={() => sendChat("actions")} className="rounded-xl">
-                        Actions
+                      <Button variant="secondary" onClick={() => sendChat("out of tolerance")} className="rounded-xl">
+                        Out of tolerance
+                      </Button>
+                      <Button variant="secondary" onClick={() => sendChat("email summary")} className="rounded-xl">
+                        Email summary
                       </Button>
                     </div>
                   </div>
                 </div>
 
-                {/* small plate KPI strip */}
+                <div className="rounded-2xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">Operator email summary</div>
+                      <div className="mt-1 text-xs text-slate-600">
+                        Fake shift-change email listing current high-risk runs and suggested actions.
+                      </div>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      className="rounded-xl"
+                      onClick={() => setEmailQueued(true)}
+                    >
+                      Send email summary
+                    </Button>
+                  </div>
+                  <div className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-700">
+                    <div className="font-semibold text-slate-900">Subject</div>
+                    <div className="mt-1">{emailSummary.subject}</div>
+                    <div className="mt-3 font-semibold text-slate-900">Body</div>
+                    <div className="mt-1 whitespace-pre-wrap">{emailSummary.body}</div>
+                  </div>
+                  {emailQueued && (
+                    <div className="mt-2 text-xs font-semibold text-emerald-700">
+                      Email queued to operator inbox (demo).
+                    </div>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-2xl border border-slate-200 bg-white p-3">
                     <div className="text-xs text-slate-500">Avg risk</div>
@@ -847,7 +1113,6 @@ export default function Page() {
                   </div>
                 </div>
 
-                {/* quick part list (minimal) */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-3">
                   <div className="text-sm font-semibold text-slate-800">Parts (sorted)</div>
                   <div className="mt-2 max-h-[220px] overflow-auto space-y-2 pr-1">
