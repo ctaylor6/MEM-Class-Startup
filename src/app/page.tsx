@@ -888,7 +888,7 @@ export default function Page() {
                           onClick={() => alert("Execute AI recommendations (demo).")}
                           className="rounded-xl"
                         >
-                          Execute AI Recommendations
+                          Execute AI Rec.
                         </Button>
                       </div>
                     </div>
